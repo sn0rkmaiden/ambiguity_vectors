@@ -3,18 +3,15 @@ from __future__ import annotations
 import argparse
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from tqdm.auto import tqdm
 
 from asv_ambiguity.config import load_yaml
-from asv_ambiguity.generation.dataset_builder import resolve_project_path, SplitAssigner
-from asv_ambiguity.generation.templates import build_positive_question_prompt
 from asv_ambiguity.models.hf import HFCausalModel
 from asv_ambiguity.utils.io import write_jsonl
 from asv_ambiguity.utils.seed import set_seed
-
-from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
@@ -24,6 +21,22 @@ class ReferentScenario:
     candidate_referents: list[str]
     target_referent: str
     destination: str
+
+
+class SplitAssigner:
+    def __init__(self, train_ratio: float, val_ratio: float):
+        if train_ratio <= 0 or val_ratio < 0 or train_ratio + val_ratio >= 1:
+            raise ValueError("Invalid split ratios.")
+        self.train_ratio = train_ratio
+        self.val_ratio = val_ratio
+
+    def assign(self, idx: int, total: int) -> str:
+        frac = (idx + 1) / max(total, 1)
+        if frac <= self.train_ratio:
+            return "train"
+        if frac <= self.train_ratio + self.val_ratio:
+            return "val"
+        return "test"
 
 
 _REFERENT_PAIRS = [
@@ -56,38 +69,10 @@ _TOPIC_CONTEXTS = {
 }
 
 
-def build_referent_scenario(topic: str, variant_index: int) -> ReferentScenario:
-    left, right = _REFERENT_PAIRS[variant_index % len(_REFERENT_PAIRS)]
-    destination = _DESTINATIONS[variant_index % len(_DESTINATIONS)]
-
-    topic_prefix = _TOPIC_CONTEXTS.get(
-        topic,
-        f"You are in a {topic} with everyday objects arranged in front of you.",
-    )
-
-    context = (
-        f"{topic_prefix} In front of you there are two possible target objects: "
-        f"a {left} and a {right}. Both are easy to reach."
-    )
-
-    instruction = f"Please place the item on {destination}."
-
-    return ReferentScenario(
-        context=context,
-        instruction=instruction,
-        candidate_referents=[left, right],
-        target_referent=left,
-        destination=destination,
-    )
-
-
-def build_negative_direct_answer(target_referent: str, destination: str) -> str:
-    article = "an" if target_referent[:1].lower() in "aeiou" else "a"
-    return f"I'll place {article} {target_referent} on {destination}."
-
-
-def build_negative_wrong_question(destination: str) -> str:
-    return f"Where exactly is {destination}?"
+def resolve_project_path(config_path: str | Path, maybe_relative_path: str | Path) -> Path:
+    base = Path(config_path).resolve().parents[2]
+    path = Path(maybe_relative_path)
+    return path if path.is_absolute() else (base / path)
 
 
 def slugify(text: str) -> str:
@@ -108,7 +93,6 @@ def build_dataset_output_path(
 ) -> Path:
     base_output_path = resolve_project_path(data_config_path, configured_output_path)
     output_dir = base_output_path.parent
-
     filename = (
         f"{slugify(concept_name)}"
         f"__{slugify(model_name)}"
@@ -117,6 +101,92 @@ def build_dataset_output_path(
         f"__seed{seed}.jsonl"
     )
     return output_dir / filename
+
+
+def build_referent_scenario(topic: str, variant_index: int) -> ReferentScenario:
+    left, right = _REFERENT_PAIRS[variant_index % len(_REFERENT_PAIRS)]
+    destination = _DESTINATIONS[variant_index % len(_DESTINATIONS)]
+
+    topic_prefix = _TOPIC_CONTEXTS.get(
+        topic,
+        f"You are in a {topic} with everyday objects arranged in front of you.",
+    )
+
+    context = (
+        f"{topic_prefix} In front of you there are two possible target objects: "
+        f"a {left} and a {right}. Both are easy to reach."
+    )
+    instruction = f"Please place the item on {destination}."
+
+    return ReferentScenario(
+        context=context,
+        instruction=instruction,
+        candidate_referents=[left, right],
+        target_referent=left,
+        destination=destination,
+    )
+
+
+def build_negative_direct_answer(target_referent: str, destination: str) -> str:
+    article = "an" if target_referent[:1].lower() in "aeiou" else "a"
+    return f"I'll place {article} {target_referent} on {destination}."
+
+
+def build_negative_wrong_question(destination: str) -> str:
+    return f"Where exactly is {destination}?"
+
+
+def build_positive_question_prompt(
+    *,
+    context: str,
+    instruction: str,
+    candidate_referents: list[str],
+) -> str:
+    return f"""You are helping create examples of good clarification questions.
+
+Read the context and instruction. Ask exactly one short, specific clarifying question that resolves which object is intended.
+
+Rules:
+- Output exactly one question.
+- Do not answer the instruction.
+- Do not add explanation.
+- The question must help choose between the two candidate referents.
+
+Context:
+{context}
+
+Instruction:
+{instruction}
+
+Candidate referents:
+- {candidate_referents[0]}
+- {candidate_referents[1]}
+
+Output one clarifying question only."""
+    
+
+def extract_first_question(text: str) -> str:
+    cleaned = text.strip()
+
+    # Remove common chat leftovers.
+    cleaned = re.sub(r"^assistant\s*[:\-]\s*", "", cleaned, flags=re.IGNORECASE).strip()
+
+    # Prefer the first line ending with ?
+    for line in cleaned.splitlines():
+        line = line.strip()
+        if "?" in line:
+            q = line[: line.find("?") + 1].strip()
+            if q:
+                return q
+
+    # Fall back to first question-looking span anywhere in the text.
+    match = re.search(r"([^?]*\?)", cleaned)
+    if match:
+        q = match.group(1).strip()
+        if q:
+            return q
+
+    raise ValueError(f"Could not extract a question from model output: {text!r}")
 
 
 def main() -> None:
@@ -168,7 +238,7 @@ def main() -> None:
                 for attempt in range(max_attempts):
                     try:
                         raw = model.generate_text(prompt)
-                        positive_response = model.extract_first_question(raw)
+                        positive_response = extract_first_question(raw)
 
                         row = {
                             "example_id": f"referent_{counter:05d}",
@@ -232,3 +302,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+    
