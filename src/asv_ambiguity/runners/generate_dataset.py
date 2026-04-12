@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import re
-from dataclasses import dataclass
 from pathlib import Path
 
 from tqdm.auto import tqdm
@@ -12,15 +12,6 @@ from asv_ambiguity.config import load_yaml
 from asv_ambiguity.models.hf import HFCausalModel
 from asv_ambiguity.utils.io import write_jsonl
 from asv_ambiguity.utils.seed import set_seed
-
-
-@dataclass(frozen=True)
-class ReferentScenario:
-    context: str
-    instruction: str
-    candidate_referents: list[str]
-    target_referent: str
-    destination: str
 
 
 class SplitAssigner:
@@ -37,36 +28,6 @@ class SplitAssigner:
         if frac <= self.train_ratio + self.val_ratio:
             return "val"
         return "test"
-
-
-_REFERENT_PAIRS = [
-    ("red mug", "blue mug"),
-    ("glass bowl", "metal bowl"),
-    ("small plate", "large plate"),
-    ("green bottle", "yellow bottle"),
-    ("paper bag", "plastic bag"),
-    ("striped towel", "plain towel"),
-    ("wooden spoon", "metal spoon"),
-    ("round tray", "square tray"),
-]
-
-_DESTINATIONS = [
-    "the counter",
-    "the table",
-    "the tray",
-    "the shelf",
-    "the cabinet",
-    "the sink area",
-]
-
-_TOPIC_CONTEXTS = {
-    "office kitchen": "You are in an office kitchen with snacks, dishes, and cleaning supplies.",
-    "home kitchen": "You are in a home kitchen with everyday utensils and ingredients.",
-    "break room": "You are in a break room with cups, plates, drinks, and shared supplies.",
-    "restaurant prep area": "You are in a restaurant prep area with containers, tools, and serving items.",
-    "cafe counter": "You are behind a cafe counter with cups, trays, and packaged food items.",
-    "pantry": "You are in a pantry with stored food, containers, and kitchen accessories.",
-}
 
 
 def resolve_project_path(config_path: str | Path, maybe_relative_path: str | Path) -> Path:
@@ -87,8 +48,7 @@ def build_dataset_output_path(
     configured_output_path: str,
     concept_name: str,
     model_name: str,
-    topics_per_run: int,
-    generations_per_topic: int,
+    generations_per_seed: int,
     seed: int,
 ) -> Path:
     base_output_path = resolve_project_path(data_config_path, configured_output_path)
@@ -96,61 +56,49 @@ def build_dataset_output_path(
     filename = (
         f"{slugify(concept_name)}"
         f"__{slugify(model_name)}"
-        f"__t{topics_per_run}"
-        f"__g{generations_per_topic}"
+        f"__gps{generations_per_seed}"
         f"__seed{seed}.jsonl"
     )
     return output_dir / filename
 
 
-def build_referent_scenario(topic: str, variant_index: int) -> ReferentScenario:
-    left, right = _REFERENT_PAIRS[variant_index % len(_REFERENT_PAIRS)]
-    destination = _DESTINATIONS[variant_index % len(_DESTINATIONS)]
-
-    topic_prefix = _TOPIC_CONTEXTS.get(
-        topic,
-        f"You are in a {topic} with everyday objects arranged in front of you.",
-    )
-
-    context = (
-        f"{topic_prefix} In front of you there are two possible target objects: "
-        f"a {left} and a {right}. Both are easy to reach."
-    )
-    instruction = f"Please place the item on {destination}."
-
-    return ReferentScenario(
-        context=context,
-        instruction=instruction,
-        candidate_referents=[left, right],
-        target_referent=left,
-        destination=destination,
-    )
-
-
-def build_negative_direct_answer(target_referent: str, destination: str) -> str:
-    article = "an" if target_referent[:1].lower() in "aeiou" else "a"
-    return f"I'll place {article} {target_referent} on {destination}."
-
-
-def build_negative_wrong_question(destination: str) -> str:
-    return f"Where exactly is {destination}?"
+def read_jsonl(path: Path) -> list[dict]:
+    rows = []
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            rows.append(json.loads(line))
+    return rows
 
 
 def build_positive_question_prompt(
     *,
     context: str,
     instruction: str,
-    candidate_referents: list[str],
+    candidate_values: list[str],
+    ambiguity_type: str,
+    gold_missing_slot: str,
 ) -> str:
-    return f"""You are creating examples of good clarification questions.
+    candidates_block = "\n".join(f"- {x}" for x in candidate_values)
 
-Read the context and instruction. Ask exactly one short, specific clarifying question that resolves which object is intended.
+    return f"""You are creating a high-quality clarifying question for an ambiguous instruction.
+
+Your task:
+Write exactly one short clarifying question that resolves the missing information.
 
 Rules:
 - Output exactly one question.
 - Do not answer the instruction.
 - Do not add explanation.
-- The question must help choose between the two candidate referents.
+- Use only the ambiguity described in the context and candidate values.
+- Do not invent new distinctions or new objects.
+- The question should directly help choose the missing information.
+- Keep it natural and specific.
+
+Ambiguity type: {ambiguity_type}
+Missing slot: {gold_missing_slot}
 
 Context:
 {context}
@@ -158,12 +106,41 @@ Context:
 Instruction:
 {instruction}
 
-Candidate referents:
-- {candidate_referents[0]}
-- {candidate_referents[1]}
+Candidate values:
+{candidates_block}
 
 Output one clarifying question only."""
     
+
+def build_negative_direct_answer(seed_row: dict) -> str:
+    first_value = seed_row["candidate_values"][0]
+    ambiguity_type = seed_row["ambiguity_type"]
+
+    if ambiguity_type == "destination":
+        return f"I'll put it on the {first_value}."
+    if ambiguity_type == "preference":
+        return f"I'll use {first_value}."
+    return f"I'll use the {first_value}."
+
+
+def build_negative_wrong_question(seed_row: dict) -> str:
+    ambiguity_type = seed_row["ambiguity_type"]
+
+    if ambiguity_type == "object_identity":
+        return "Where should I put it?"
+    if ambiguity_type == "preference":
+        return "Where should I serve it?"
+    if ambiguity_type == "destination":
+        return "Which item do you mean?"
+    return "Could you clarify?"
+
+
+def maybe_get_input_split(seed_row: dict) -> str | None:
+    split = seed_row.get("split")
+    if split in {"train", "val", "test"}:
+        return split
+    return None
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -180,35 +157,46 @@ def main() -> None:
     model = HFCausalModel(model_config)
     model_name_for_filename = getattr(model, "model_name", model_config["model"]["name"])
 
-    topics_path = resolve_project_path(args.data_config, data_config["input"]["topics_path"])
-    topics = json.loads(Path(topics_path).read_text(encoding="utf-8"))
+    seed_path = resolve_project_path(args.data_config, data_config["input"]["seed_jsonl"])
+    seed_rows = read_jsonl(seed_path)
 
-    topics_per_run = int(data_config["sampling"]["topics_per_run"])
-    generations_per_topic = int(data_config["sampling"]["generations_per_topic"])
+    generations_per_seed = int(data_config["sampling"].get("generations_per_seed", 1))
     max_attempts = int(data_config["sampling"].get("max_attempts_per_example", 5))
+    preserve_input_split = bool(data_config["splits"].get("preserve_input_split", False))
 
-    selected_topics = topics[:topics_per_run]
+    rng = random.Random(seed)
+    shuffled_seed_rows = seed_rows[:]
+    rng.shuffle(shuffled_seed_rows)
+
     split_assigner = SplitAssigner(
         train_ratio=float(data_config["splits"]["train_ratio"]),
         val_ratio=float(data_config["splits"]["val_ratio"]),
     )
 
     rows = []
-    total_items = len(selected_topics) * generations_per_topic
+    total_items = len(shuffled_seed_rows) * generations_per_seed
     counter = 0
 
     progress = tqdm(total=total_items, desc="Generating dataset", unit="example")
 
     try:
-        for topic in selected_topics:
-            for variant_index in range(generations_per_topic):
-                split = split_assigner.assign(counter, total_items)
-                scenario = build_referent_scenario(topic, variant_index)
+        for seed_idx, seed_row in enumerate(shuffled_seed_rows):
+            for gen_idx in range(generations_per_seed):
+                if preserve_input_split:
+                    split = maybe_get_input_split(seed_row)
+                    if split is None:
+                        raise ValueError(
+                            "preserve_input_split=true but a seed row has no valid split field."
+                        )
+                else:
+                    split = split_assigner.assign(counter, total_items)
 
                 prompt = build_positive_question_prompt(
-                    context=scenario.context,
-                    instruction=scenario.instruction,
-                    candidate_referents=scenario.candidate_referents,
+                    context=seed_row["context"],
+                    instruction=seed_row["instruction"],
+                    candidate_values=seed_row["candidate_values"],
+                    ambiguity_type=seed_row["ambiguity_type"],
+                    gold_missing_slot=seed_row["gold_missing_slot"],
                 )
 
                 last_error = None
@@ -218,46 +206,47 @@ def main() -> None:
                         positive_response = model.extract_first_question(raw)
 
                         row = {
-                            "example_id": f"referent_{counter:05d}",
+                            "example_id": f"seeded_{counter:05d}",
                             "concept_name": data_config["concept"]["name"],
-                            "topic": topic,
+                            "topic": seed_row["topic"],
+                            "ambiguity_type": seed_row["ambiguity_type"],
+                            "gold_missing_slot": seed_row["gold_missing_slot"],
                             "split": split,
-                            "context": scenario.context,
-                            "instruction": scenario.instruction,
+                            "context": seed_row["context"],
+                            "instruction": seed_row["instruction"],
                             "positive_response": positive_response,
-                            "negative_direct_answer": build_negative_direct_answer(
-                                scenario.target_referent,
-                                scenario.destination,
-                            ),
-                            "negative_wrong_question": build_negative_wrong_question(
-                                scenario.destination,
-                            ),
-                            "missing_slot_type": "referent",
-                            "candidate_referents": scenario.candidate_referents,
+                            "negative_direct_answer": build_negative_direct_answer(seed_row),
+                            "negative_wrong_question": build_negative_wrong_question(seed_row),
+                            "candidate_values": seed_row["candidate_values"],
+                            # kept for backward compatibility with earlier utilities
+                            "candidate_referents": seed_row["candidate_values"],
                             "metadata": {
-                                "generator": "templated_context_model_question",
-                                "target_referent": scenario.target_referent,
-                                "raw_model_output": raw,
+                                "generator": "seeded_context_model_question",
                                 "model_name": model_name_for_filename,
-                                "variant_index": variant_index,
+                                "seed_row_index": seed_idx,
+                                "generation_index": gen_idx,
+                                "raw_model_output": raw,
                             },
                         }
 
                         rows.append(row)
                         counter += 1
                         progress.update(1)
-                        progress.set_postfix_str(f"topic={topic}")
+                        progress.set_postfix_str(
+                            f"type={seed_row['ambiguity_type']} topic={seed_row['topic']}"
+                        )
                         break
                     except Exception as exc:
                         last_error = exc
                         progress.write(
-                            f"[warn] topic={topic!r} example={counter:05d} "
+                            f"[warn] topic={seed_row['topic']!r} example={counter:05d} "
                             f"attempt={attempt + 1}/{max_attempts} failed: {exc}"
                         )
                 else:
                     raise RuntimeError(
-                        f"Failed to build example for topic={topic!r}, example={counter:05d} "
-                        f"after {max_attempts} attempts. Last error: {last_error}"
+                        f"Failed to build example for topic={seed_row['topic']!r}, "
+                        f"example={counter:05d} after {max_attempts} attempts. "
+                        f"Last error: {last_error}"
                     )
     finally:
         progress.close()
@@ -267,8 +256,7 @@ def main() -> None:
         configured_output_path=data_config["output"]["dataset_jsonl"],
         concept_name=data_config["concept"]["name"],
         model_name=model_name_for_filename,
-        topics_per_run=topics_per_run,
-        generations_per_topic=generations_per_topic,
+        generations_per_seed=generations_per_seed,
         seed=seed,
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)

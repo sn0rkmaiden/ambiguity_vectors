@@ -1,0 +1,18 @@
+concept:
+  name: clarification_seeded_v1
+
+input:
+  seed_jsonl: data/seeds/clarification_seeds_realistic_v1.jsonl
+
+sampling:
+  generations_per_seed: 1
+  random_seed: 42
+  max_attempts_per_example: 5
+
+splits:
+  preserve_input_split: false
+  train_ratio: 0.7
+  val_ratio: 0.15
+
+output:
+  dataset_jsonl: outputs/generated/dataset.jsonl
