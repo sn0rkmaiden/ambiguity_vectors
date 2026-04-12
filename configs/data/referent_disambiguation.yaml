@@ -1,0 +1,21 @@
+concept:
+  name: referent_disambiguation
+  description: useful questions that identify which entity the user means
+  missing_slot_type: referent
+  candidate_referent_count: 2
+
+splits:
+  train_ratio: 0.7
+  val_ratio: 0.15
+  test_ratio: 0.15
+
+sampling:
+  topics_per_run: 20
+  generations_per_topic: 4
+  random_seed: 42
+
+input:
+  topics_path: data/concepts/referent_disambiguation/topics.json
+
+output:
+  dataset_jsonl: outputs/generated/referent_disambiguation_dataset.jsonl
