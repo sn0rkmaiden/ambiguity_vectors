@@ -48,6 +48,10 @@ Generate synthetic examples:
 
 ```bash
 python -m asv_ambiguity.runners.generate_dataset   --model-config configs/model/llama32_1b_instruct.yaml   --data-config configs/data/referent_disambiguation.yaml
+
+python -m asv_ambiguity.runners.generate_dataset \
+  --model-config configs/model/llama31_8b_instruct.yaml \
+  --data-config configs/data/clarification_seeded_v1.yaml
 ```
 
 Inspect generated dataset:
@@ -66,11 +70,21 @@ Collect activations:
 python -m asv_ambiguity.runners.collect_activations   --model-config configs/model/llama32_1b_instruct.yaml   --extraction-config configs/extraction/first_assistant_token.yaml   --dataset outputs/generated/referent_disambiguation_dataset.jsonl
 
 # 8B model
-python -m asv_ambiguity.runners.collect_activations   --model-config configs/model/llama31_8b_instruct.yaml   --extraction-config configs/extraction/first_assistant_token.yaml   --dataset outputs/generated/referent_disambiguation__unsloth_Llama-3.1-8B-Instruct__t20__g4__seed42.jsonl
+python -m asv_ambiguity.runners.collect_activations   --model-config configs/model/llama31_8b_instruct.yaml   --extraction-config configs/extraction/first_assistant_token.yaml   --dataset outputs/generated/clarification_seeded_v1__unsloth_Llama-3.1-8B-Instruct__gps1__seed42.jsonl
 ```
 
 Extract the first dense vector:
 
 ```bash
 python -m asv_ambiguity.runners.extract_vector   --vector-config configs/vectors/referent_vector.yaml   --activations outputs/activations/referent_disambiguation_first_assistant_token.pt
+```
+
+Score the vector on held-out rows, compare positive response against the two negatives, check whether the positive gets the highest score more often than chance:
+```bash
+python -m asv_ambiguity.runners.validate_vector \
+  --model-config configs/model/llama31_8b_instruct.yaml \
+  --dataset outputs/generated/clarification_seeded_v1__unsloth_Llama-3.1-8B-Instruct__gps1__seed42.jsonl \
+  --vector outputs/vectors/referent_disambiguation_layer12.pt \
+  --metadata outputs/vectors/referent_disambiguation_layer12.json \
+  --splits val test
 ```
