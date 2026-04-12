@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 from tqdm.auto import tqdm
@@ -17,6 +18,35 @@ from asv_ambiguity.generation.templates import build_positive_question_prompt
 from asv_ambiguity.models.hf import HFCausalModel
 from asv_ambiguity.utils.io import write_jsonl
 from asv_ambiguity.utils.seed import set_seed
+
+
+def slugify(text: str) -> str:
+    text = text.strip().replace("/", "_")
+    text = re.sub(r"[^A-Za-z0-9._-]+", "_", text)
+    return text.strip("_")
+
+
+def build_dataset_output_path(
+    *,
+    data_config_path: str,
+    configured_output_path: str,
+    concept_name: str,
+    model_name: str,
+    topics_per_run: int,
+    generations_per_topic: int,
+    seed: int,
+) -> Path:
+    base_output_path = resolve_project_path(data_config_path, configured_output_path)
+    output_dir = base_output_path.parent
+
+    filename = (
+        f"{slugify(concept_name)}"
+        f"__{slugify(model_name)}"
+        f"__t{topics_per_run}"
+        f"__g{generations_per_topic}"
+        f"__seed{seed}.jsonl"
+    )
+    return output_dir / filename
 
 
 def main() -> None:
@@ -35,6 +65,7 @@ def main() -> None:
 
     topics_path = resolve_project_path(args.data_config, data_config["input"]["topics_path"])
     topics = json.loads(Path(topics_path).read_text(encoding="utf-8"))
+
     topics_per_run = int(data_config["sampling"]["topics_per_run"])
     generations_per_topic = int(data_config["sampling"]["generations_per_topic"])
     max_attempts = int(data_config["sampling"].get("max_attempts_per_example", 5))
@@ -56,6 +87,7 @@ def main() -> None:
             for variant_index in range(generations_per_topic):
                 split = split_assigner.assign(counter, total_items)
                 scenario = build_referent_scenario(topic, variant_index)
+
                 prompt = build_positive_question_prompt(
                     context=scenario.context,
                     instruction=scenario.instruction,
@@ -67,6 +99,7 @@ def main() -> None:
                     try:
                         raw = model.generate_text(prompt)
                         positive_response = model.extract_first_question(raw)
+
                         row = {
                             "example_id": f"referent_{counter:05d}",
                             "concept_name": data_config["concept"]["name"],
@@ -88,8 +121,11 @@ def main() -> None:
                                 "generator": "templated_context_model_question",
                                 "target_referent": scenario.target_referent,
                                 "raw_model_output": raw,
+                                "model_name": model_config["model_name"],
+                                "variant_index": variant_index,
                             },
                         }
+
                         rows.append(row)
                         counter += 1
                         progress.update(1)
@@ -109,7 +145,17 @@ def main() -> None:
     finally:
         progress.close()
 
-    output_path = resolve_project_path(args.data_config, data_config["output"]["dataset_jsonl"])
+    output_path = build_dataset_output_path(
+        data_config_path=args.data_config,
+        configured_output_path=data_config["output"]["dataset_jsonl"],
+        concept_name=data_config["concept"]["name"],
+        model_name=model_config["model_name"],
+        topics_per_run=topics_per_run,
+        generations_per_topic=generations_per_topic,
+        seed=seed,
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
     write_jsonl(output_path, rows)
     print(f"Wrote {len(rows)} examples to {output_path}")
 
