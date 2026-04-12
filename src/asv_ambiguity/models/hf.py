@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import json
+import re
 from typing import Any
 
 import torch
@@ -20,7 +20,7 @@ class HFCausalModel:
         gen_cfg = config["generation"]
         prompt_cfg = config.get("prompting", {})
 
-        dtype_name = model_cfg.get("torch_dtype", "bfloat16")
+        dtype_name = model_cfg.get("dtype", model_cfg.get("torch_dtype", "bfloat16"))
         if dtype_name not in _DTYPES:
             raise ValueError(f"Unsupported dtype: {dtype_name}")
 
@@ -34,7 +34,7 @@ class HFCausalModel:
         self.tokenizer.padding_side = "left"
 
         model_kwargs: dict[str, Any] = {
-            "torch_dtype": _DTYPES[dtype_name],
+            "dtype": _DTYPES[dtype_name],
         }
         if model_cfg.get("device_map") is not None:
             model_kwargs["device_map"] = model_cfg["device_map"]
@@ -89,9 +89,33 @@ class HFCausalModel:
         }
 
     @staticmethod
-    def parse_json_response(text: str) -> dict[str, Any]:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start == -1 or end == -1 or end <= start:
-            raise ValueError("Model output did not contain a JSON object.")
-        return json.loads(text[start:end + 1])
+    def parse_tagged_response(text: str) -> dict[str, Any]:
+        patterns = {
+            "context": r"(?ims)^CONTEXT:\s*(.*?)\s*(?=^INSTRUCTION:|\Z)",
+            "instruction": r"(?ims)^INSTRUCTION:\s*(.*?)\s*(?=^POSITIVE_RESPONSE:|\Z)",
+            "positive_response": r"(?ims)^POSITIVE_RESPONSE:\s*(.*?)\s*(?=^NEGATIVE_DIRECT_ANSWER:|\Z)",
+            "negative_direct_answer": r"(?ims)^NEGATIVE_DIRECT_ANSWER:\s*(.*?)\s*(?=^NEGATIVE_WRONG_QUESTION:|\Z)",
+            "negative_wrong_question": r"(?ims)^NEGATIVE_WRONG_QUESTION:\s*(.*?)\s*(?=^CANDIDATE_REFERENTS:|\Z)",
+            "candidate_referents": r"(?ims)^CANDIDATE_REFERENTS:\s*(.*?)\s*(?=\Z)",
+        }
+
+        payload: dict[str, Any] = {}
+        missing: list[str] = []
+        for key, pattern in patterns.items():
+            match = re.search(pattern, text)
+            if not match:
+                missing.append(key)
+                continue
+            payload[key] = match.group(1).strip()
+
+        if missing:
+            raise ValueError(f"Missing tagged sections: {missing}")
+
+        raw_refs = payload["candidate_referents"]
+        if "|" in raw_refs:
+            refs = [part.strip() for part in raw_refs.split("|")]
+        else:
+            refs = [part.strip() for part in raw_refs.splitlines() if part.strip()]
+        refs = [ref.lstrip("-•* ").strip() for ref in refs if ref.strip()]
+        payload["candidate_referents"] = refs
+        return payload

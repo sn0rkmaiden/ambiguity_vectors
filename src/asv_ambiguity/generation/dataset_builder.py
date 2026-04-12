@@ -29,6 +29,7 @@ def build_example(
     topic: str,
     split: str,
     payload: dict[str, Any],
+    default_missing_slot_type: str = "referent",
 ) -> ReferentDisambiguationExample:
     required = [
         "context",
@@ -37,7 +38,6 @@ def build_example(
         "negative_direct_answer",
         "negative_wrong_question",
         "candidate_referents",
-        "missing_slot_type",
     ]
     missing = [k for k in required if k not in payload]
     if missing:
@@ -46,6 +46,10 @@ def build_example(
     candidate_referents = payload["candidate_referents"]
     if not isinstance(candidate_referents, list) or len(candidate_referents) != 2:
         raise ValueError("candidate_referents must be a list of length 2.")
+
+    missing_slot_type = str(
+        payload.get("missing_slot_type", default_missing_slot_type)
+    ).strip() or default_missing_slot_type
 
     return ReferentDisambiguationExample(
         example_id=example_id,
@@ -57,9 +61,9 @@ def build_example(
         positive_response=str(payload["positive_response"]).strip(),
         negative_direct_answer=str(payload["negative_direct_answer"]).strip(),
         negative_wrong_question=str(payload["negative_wrong_question"]).strip(),
-        missing_slot_type=str(payload["missing_slot_type"]).strip(),
+        missing_slot_type=missing_slot_type,
         candidate_referents=[str(x).strip() for x in candidate_referents],
-        metadata={"generator": "model_self_generated"},
+        metadata={"generator": "model_self_generated_tagged"},
     )
 
 
