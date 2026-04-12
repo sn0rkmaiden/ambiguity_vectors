@@ -45,13 +45,14 @@ class HFCausalModel:
         self.model.eval()
 
         self.generation_kwargs = dict(gen_cfg)
-        # Avoid the "max_new_tokens and max_length both set" warning.
         self.generation_kwargs.pop("max_length", None)
-
         if self.generation_kwargs.get("pad_token_id") is None:
             self.generation_kwargs["pad_token_id"] = self.tokenizer.pad_token_id
         if self.generation_kwargs.get("eos_token_id") is None:
             self.generation_kwargs["eos_token_id"] = self.tokenizer.eos_token_id
+
+    def _input_device(self) -> torch.device:
+        return self.model.get_input_embeddings().weight.device
 
     def build_messages(self, user_prompt: str) -> list[dict[str, str]]:
         return [
@@ -69,16 +70,29 @@ class HFCausalModel:
             )
         return f"System: {self.system_prompt}\nUser: {user_prompt}\nAssistant:"
 
+    def tokenize_full_text(self, text: str) -> dict[str, torch.Tensor]:
+        tokenized = self.tokenizer(text, return_tensors="pt")
+        device = self._input_device()
+        return {k: v.to(device) for k, v in tokenized.items()}
+
     def generate_text(self, user_prompt: str) -> str:
         prompt_text = self.render_prompt(user_prompt)
-        tokenized = self.tokenizer(prompt_text, return_tensors="pt")
-        tokenized = {k: v.to(self.model.device) for k, v in tokenized.items()}
+        tokenized = self.tokenize_full_text(prompt_text)
 
         with torch.no_grad():
             out = self.model.generate(**tokenized, **self.generation_kwargs)
 
         new_tokens = out[0, tokenized["input_ids"].shape[1]:]
         return self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+
+    def forward_hidden_states(self, text: str) -> dict[str, Any]:
+        tokenized = self.tokenize_full_text(text)
+        with torch.no_grad():
+            outputs = self.model(**tokenized, output_hidden_states=True, use_cache=False)
+        return {
+            "input_ids": tokenized["input_ids"],
+            "hidden_states": outputs.hidden_states,
+        }
 
     @staticmethod
     def extract_first_question(text: str) -> str:

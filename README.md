@@ -50,10 +50,23 @@ Generate synthetic examples:
 python -m asv_ambiguity.runners.generate_dataset   --model-config configs/model/llama32_1b_instruct.yaml   --data-config configs/data/referent_disambiguation.yaml
 ```
 
+Inspect generated dataset:
+
+```bash
+python -m asv_ambiguity.runners.inspect_dataset \
+  --dataset outputs/generated/referent_disambiguation__unsloth_Llama-3.1-8B-Instruct__t20__g4__seed42.jsonl \
+  --num-examples 12 \
+  --show-raw
+```
+
 Collect activations:
 
 ```bash
+# 1B model
 python -m asv_ambiguity.runners.collect_activations   --model-config configs/model/llama32_1b_instruct.yaml   --extraction-config configs/extraction/first_assistant_token.yaml   --dataset outputs/generated/referent_disambiguation_dataset.jsonl
+
+# 8B model
+python -m asv_ambiguity.runners.collect_activations   --model-config configs/model/llama31_8b_instruct.yaml   --extraction-config configs/extraction/first_assistant_token.yaml   --dataset outputs/generated/referent_disambiguation__unsloth_Llama-3.1-8B-Instruct__t20__g4__seed42.jsonl
 ```
 
 Extract the first dense vector:
