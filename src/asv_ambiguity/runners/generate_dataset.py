@@ -9,15 +9,85 @@ from tqdm.auto import tqdm
 
 from asv_ambiguity.config import load_yaml
 from asv_ambiguity.generation.dataset_builder import resolve_project_path, SplitAssigner
-from asv_ambiguity.generation.scenario_builder import (
-    build_negative_direct_answer,
-    build_negative_wrong_question,
-    build_referent_scenario,
-)
 from asv_ambiguity.generation.templates import build_positive_question_prompt
 from asv_ambiguity.models.hf import HFCausalModel
 from asv_ambiguity.utils.io import write_jsonl
 from asv_ambiguity.utils.seed import set_seed
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class ReferentScenario:
+    context: str
+    instruction: str
+    candidate_referents: list[str]
+    target_referent: str
+    destination: str
+
+
+_REFERENT_PAIRS = [
+    ("red mug", "blue mug"),
+    ("glass bowl", "metal bowl"),
+    ("small plate", "large plate"),
+    ("green bottle", "yellow bottle"),
+    ("paper bag", "plastic bag"),
+    ("striped towel", "plain towel"),
+    ("wooden spoon", "metal spoon"),
+    ("round tray", "square tray"),
+]
+
+_DESTINATIONS = [
+    "the counter",
+    "the table",
+    "the tray",
+    "the shelf",
+    "the cabinet",
+    "the sink area",
+]
+
+_TOPIC_CONTEXTS = {
+    "office kitchen": "You are in an office kitchen with snacks, dishes, and cleaning supplies.",
+    "home kitchen": "You are in a home kitchen with everyday utensils and ingredients.",
+    "break room": "You are in a break room with cups, plates, drinks, and shared supplies.",
+    "restaurant prep area": "You are in a restaurant prep area with containers, tools, and serving items.",
+    "cafe counter": "You are behind a cafe counter with cups, trays, and packaged food items.",
+    "pantry": "You are in a pantry with stored food, containers, and kitchen accessories.",
+}
+
+
+def build_referent_scenario(topic: str, variant_index: int) -> ReferentScenario:
+    left, right = _REFERENT_PAIRS[variant_index % len(_REFERENT_PAIRS)]
+    destination = _DESTINATIONS[variant_index % len(_DESTINATIONS)]
+
+    topic_prefix = _TOPIC_CONTEXTS.get(
+        topic,
+        f"You are in a {topic} with everyday objects arranged in front of you.",
+    )
+
+    context = (
+        f"{topic_prefix} In front of you there are two possible target objects: "
+        f"a {left} and a {right}. Both are easy to reach."
+    )
+
+    instruction = f"Please place the item on {destination}."
+
+    return ReferentScenario(
+        context=context,
+        instruction=instruction,
+        candidate_referents=[left, right],
+        target_referent=left,
+        destination=destination,
+    )
+
+
+def build_negative_direct_answer(target_referent: str, destination: str) -> str:
+    article = "an" if target_referent[:1].lower() in "aeiou" else "a"
+    return f"I'll place {article} {target_referent} on {destination}."
+
+
+def build_negative_wrong_question(destination: str) -> str:
+    return f"Where exactly is {destination}?"
 
 
 def slugify(text: str) -> str:
