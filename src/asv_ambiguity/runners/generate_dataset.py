@@ -142,7 +142,7 @@ def build_positive_question_prompt(
     instruction: str,
     candidate_referents: list[str],
 ) -> str:
-    return f"""You are helping create examples of good clarification questions.
+    return f"""You are creating examples of good clarification questions.
 
 Read the context and instruction. Ask exactly one short, specific clarifying question that resolves which object is intended.
 
@@ -165,30 +165,6 @@ Candidate referents:
 Output one clarifying question only."""
     
 
-def extract_first_question(text: str) -> str:
-    cleaned = text.strip()
-
-    # Remove common chat leftovers.
-    cleaned = re.sub(r"^assistant\s*[:\-]\s*", "", cleaned, flags=re.IGNORECASE).strip()
-
-    # Prefer the first line ending with ?
-    for line in cleaned.splitlines():
-        line = line.strip()
-        if "?" in line:
-            q = line[: line.find("?") + 1].strip()
-            if q:
-                return q
-
-    # Fall back to first question-looking span anywhere in the text.
-    match = re.search(r"([^?]*\?)", cleaned)
-    if match:
-        q = match.group(1).strip()
-        if q:
-            return q
-
-    raise ValueError(f"Could not extract a question from model output: {text!r}")
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-config", required=True)
@@ -202,6 +178,7 @@ def main() -> None:
     set_seed(seed)
 
     model = HFCausalModel(model_config)
+    model_name_for_filename = getattr(model, "model_name", model_config["model"]["name"])
 
     topics_path = resolve_project_path(args.data_config, data_config["input"]["topics_path"])
     topics = json.loads(Path(topics_path).read_text(encoding="utf-8"))
@@ -238,7 +215,7 @@ def main() -> None:
                 for attempt in range(max_attempts):
                     try:
                         raw = model.generate_text(prompt)
-                        positive_response = extract_first_question(raw)
+                        positive_response = model.extract_first_question(raw)
 
                         row = {
                             "example_id": f"referent_{counter:05d}",
@@ -261,7 +238,7 @@ def main() -> None:
                                 "generator": "templated_context_model_question",
                                 "target_referent": scenario.target_referent,
                                 "raw_model_output": raw,
-                                "model_name": model_config["model_name"],
+                                "model_name": model_name_for_filename,
                                 "variant_index": variant_index,
                             },
                         }
@@ -289,7 +266,7 @@ def main() -> None:
         data_config_path=args.data_config,
         configured_output_path=data_config["output"]["dataset_jsonl"],
         concept_name=data_config["concept"]["name"],
-        model_name=model_config["model_name"],
+        model_name=model_name_for_filename,
         topics_per_run=topics_per_run,
         generations_per_topic=generations_per_topic,
         seed=seed,
@@ -302,4 +279,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-    

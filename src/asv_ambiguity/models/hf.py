@@ -17,14 +17,14 @@ _DTYPES = {
 class HFCausalModel:
     def __init__(self, config: dict[str, Any]):
         model_cfg = config["model"]
-        gen_cfg = config["generation"]
+        gen_cfg = config.get("generation", {})
         prompt_cfg = config.get("prompting", {})
 
         dtype_name = model_cfg.get("dtype", model_cfg.get("torch_dtype", "bfloat16"))
         if dtype_name not in _DTYPES:
             raise ValueError(f"Unsupported dtype: {dtype_name}")
 
-        self.model_name = model_cfg["name"]
+        self.model_name = str(model_cfg["name"])
         self.system_prompt = str(prompt_cfg.get("system_prompt", "You are a careful assistant."))
         self.use_chat_template = bool(model_cfg.get("use_chat_template", True))
 
@@ -45,6 +45,9 @@ class HFCausalModel:
         self.model.eval()
 
         self.generation_kwargs = dict(gen_cfg)
+        # Avoid the "max_new_tokens and max_length both set" warning.
+        self.generation_kwargs.pop("max_length", None)
+
         if self.generation_kwargs.get("pad_token_id") is None:
             self.generation_kwargs["pad_token_id"] = self.tokenizer.pad_token_id
         if self.generation_kwargs.get("eos_token_id") is None:
@@ -70,52 +73,29 @@ class HFCausalModel:
         prompt_text = self.render_prompt(user_prompt)
         tokenized = self.tokenizer(prompt_text, return_tensors="pt")
         tokenized = {k: v.to(self.model.device) for k, v in tokenized.items()}
+
         with torch.no_grad():
             out = self.model.generate(**tokenized, **self.generation_kwargs)
+
         new_tokens = out[0, tokenized["input_ids"].shape[1]:]
         return self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
 
-    def tokenize_full_text(self, text: str) -> dict[str, torch.Tensor]:
-        tokenized = self.tokenizer(text, return_tensors="pt")
-        return {k: v.to(self.model.device) for k, v in tokenized.items()}
-
-    def forward_hidden_states(self, text: str) -> dict[str, Any]:
-        tokenized = self.tokenize_full_text(text)
-        with torch.no_grad():
-            outputs = self.model(**tokenized, output_hidden_states=True, use_cache=False)
-        return {
-            "input_ids": tokenized["input_ids"],
-            "hidden_states": outputs.hidden_states,
-        }
-
     @staticmethod
-    def parse_tagged_response(text: str) -> dict[str, Any]:
-        patterns = {
-            "context": r"(?ims)^CONTEXT:\s*(.*?)\s*(?=^INSTRUCTION:|\Z)",
-            "instruction": r"(?ims)^INSTRUCTION:\s*(.*?)\s*(?=^POSITIVE_RESPONSE:|\Z)",
-            "positive_response": r"(?ims)^POSITIVE_RESPONSE:\s*(.*?)\s*(?=^NEGATIVE_DIRECT_ANSWER:|\Z)",
-            "negative_direct_answer": r"(?ims)^NEGATIVE_DIRECT_ANSWER:\s*(.*?)\s*(?=^NEGATIVE_WRONG_QUESTION:|\Z)",
-            "negative_wrong_question": r"(?ims)^NEGATIVE_WRONG_QUESTION:\s*(.*?)\s*(?=^CANDIDATE_REFERENTS:|\Z)",
-            "candidate_referents": r"(?ims)^CANDIDATE_REFERENTS:\s*(.*?)\s*(?=\Z)",
-        }
+    def extract_first_question(text: str) -> str:
+        cleaned = text.strip()
+        cleaned = re.sub(r"^assistant\s*[:\-]\s*", "", cleaned, flags=re.IGNORECASE).strip()
 
-        payload: dict[str, Any] = {}
-        missing: list[str] = []
-        for key, pattern in patterns.items():
-            match = re.search(pattern, text)
-            if not match:
-                missing.append(key)
-                continue
-            payload[key] = match.group(1).strip()
+        for line in cleaned.splitlines():
+            line = line.strip()
+            if "?" in line:
+                q = line[: line.find("?") + 1].strip()
+                if q:
+                    return q
 
-        if missing:
-            raise ValueError(f"Missing tagged sections: {missing}")
+        match = re.search(r"([^?]*\?)", cleaned)
+        if match:
+            q = match.group(1).strip()
+            if q:
+                return q
 
-        raw_refs = payload["candidate_referents"]
-        if "|" in raw_refs:
-            refs = [part.strip() for part in raw_refs.split("|")]
-        else:
-            refs = [part.strip() for part in raw_refs.splitlines() if part.strip()]
-        refs = [ref.lstrip("-•* ").strip() for ref in refs if ref.strip()]
-        payload["candidate_referents"] = refs
-        return payload
+        raise ValueError(f"Could not extract a question from model output: {text!r}")
