@@ -56,7 +56,7 @@ Inspect generated dataset:
 
 ```bash
 python -m asv_ambiguity.runners.inspect_dataset \
-  --dataset outputs/generated/referent_disambiguation__unsloth_Llama-3.1-8B-Instruct__t20__g4__seed42.jsonl \
+  --dataset outputs/generated/{paste_filename}.jsonl \
   --num-examples 12 \
   --show-raw
 ```
@@ -65,16 +65,16 @@ Collect activations:
 
 ```bash
 # 1B model
-python -m asv_ambiguity.runners.collect_activations   --model-config configs/model/llama32_1b_instruct.yaml   --extraction-config configs/extraction/first_assistant_token.yaml   --dataset outputs/generated/referent_disambiguation_dataset.jsonl
+python -m asv_ambiguity.runners.collect_activations   --model-config configs/model/llama32_1b_instruct.yaml   --extraction-config configs/extraction/first_assistant_token.yaml   --dataset outputs/generated/{paste_filename}.jsonl
 
 # 8B model
-python -m asv_ambiguity.runners.collect_activations   --model-config configs/model/llama31_8b_instruct.yaml   --extraction-config configs/extraction/first_assistant_token.yaml   --dataset outputs/generated/clarification_seeded_v1__unsloth_Llama-3.1-8B-Instruct__gps1__seed42.jsonl
+python -m asv_ambiguity.runners.collect_activations   --model-config configs/model/llama31_8b_instruct.yaml   --extraction-config configs/extraction/first_assistant_token.yaml   --dataset outputs/generated/{paste_filename}.jsonl
 
 # collect activations on multiple positions
 python -m asv_ambiguity.runners.collect_activations \
   --model-config configs/model/llama31_8b_instruct.yaml \
   --extraction-config configs/extraction/multi_positions.yaml \
-  --dataset outputs/generated/clarification_seeded_v1__unsloth_Llama-3.1-8B-Instruct__gps1__seed42.jsonl
+  --dataset outputs/generated/{paste_filename}.jsonl
 ```
 
 Extract the first dense vector:
@@ -85,23 +85,18 @@ python -m asv_ambiguity.runners.extract_vector   --vector-config configs/vectors
 # extract vectors from multiple positions (if multi_position.yaml was used in command before)
 python -m asv_ambiguity.runners.extract_vector \
   --vector-config configs/vectors/multi_position_vectors.yaml \
-  --activations outputs/activations/clarification_seeded_v1__unsloth_Llama-3.1-8B-Instruct__gps1__seed42__unsloth_Llama-3.1-8B-Instruct__multi_position.pt
+  --activations outputs/activations/{paste_activations_filename}.pt
 ```
 
 Score the vector on held-out rows, compare positive response against the two negatives, check whether the positive gets the highest score more often than chance:
 ```bash
 python -m asv_ambiguity.runners.validate_vector \
   --model-config configs/model/llama31_8b_instruct.yaml \
-  --dataset outputs/generated/clarification_seeded_v1__unsloth_Llama-3.1-8B-Instruct__gps1__seed42.jsonl \
+  --dataset outputs/generated/{paste_filename}.jsonl \
   --vector outputs/vectors/referent_disambiguation_layer12.pt \
   --metadata outputs/vectors/referent_disambiguation_layer12.json \
   --splits val test
 
 # validate all vectors from multiple positions (provided that the necessary activations were collected beforehand)
-python -m asv_ambiguity.runners.validate_vector \
---model-config configs/model/llama31_8b_instruct.yaml \
---dataset outputs/generated/clarification_seeded_v1__unsloth_Llama-3.1-8B-Instruct__gps1__seed42.jsonl \
---vector outputs/vectors/clarification_seeded_v1__mean_response__layer12.pt \
---metadata outputs/vectors/clarification_seeded_v1__mean_response__layer12.json \
---splits val test
+python -m asv_ambiguity.runners.validate_vector --model-config configs/model/llama31_8b_instruct.yaml --dataset outputs/generated/{paste_filename}.jsonl --vector outputs/vectors/{paste vector file for validation}.pt --metadata outputs/vectors/{paste vector file for validation}.json --splits val test
 ```
