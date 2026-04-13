@@ -106,5 +106,5 @@ Run visualization:
 ```bash
 export NEURONPEDIA_API_KEY="your_secret_key"
 
-python visualize_with_neuronpedia.py --vector outputs/vectors/clarification_seeded_v1__last_question_token__layer16.pt --metadata outputs/vectors/clarification_seeded_v1__last_question_token__layer16.json --prompt-file src/asv_ambiguity/data/example_prompt.txt --output-html outputs/visualizations/neuronpedia_example.html --model-id llama3.1-8b-it
+python src/asv_ambiguity/utils/visualize_with_neuronpedia.py --vector outputs/vectors/clarification_seeded_v1__last_question_token__layer16.pt --metadata outputs/vectors/clarification_seeded_v1__last_question_token__layer16.json --prompt-file src/asv_ambiguity/data/example_prompt.txt --output-html outputs/visualizations/neuronpedia_example.html --model-id llama3.1-8b-it
 ```
