@@ -4,12 +4,10 @@ import argparse
 import html
 import json
 import math
-import re
 from pathlib import Path
 from typing import Any
 
 import torch
-from tqdm.auto import tqdm
 
 from asv_ambiguity.config import load_yaml
 from asv_ambiguity.models.hf import HFCausalModel
@@ -20,9 +18,8 @@ def read_jsonl(path: Path) -> list[dict]:
     with path.open("r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
-            if not line:
-                continue
-            rows.append(json.loads(line))
+            if line:
+                rows.append(json.loads(line))
     return rows
 
 
@@ -109,12 +106,10 @@ def clip(x: float, lo: float, hi: float) -> float:
 def score_to_rgba(score: float, max_abs: float = 2.5) -> str:
     s = clip(score / max_abs, -1.0, 1.0)
     alpha = abs(s) * 0.85
-
     if s >= 0:
         r, g, b = 220, 60, 60
     else:
         r, g, b = 70, 110, 220
-
     return f"rgba({r}, {g}, {b}, {alpha:.3f})"
 
 
@@ -229,6 +224,10 @@ def find_row(rows: list[dict], example_id: str) -> dict:
     raise ValueError(f"Example id '{example_id}' not found.")
 
 
+def log(msg: str) -> None:
+    print(msg, flush=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-config", required=True)
@@ -261,96 +260,88 @@ def main() -> None:
     if not using_text_file and not (args.dataset and args.example_id):
         raise ValueError("Provide either --text-file OR both --dataset and --example-id.")
 
-    progress = tqdm(total=7, desc="Starting", unit="step")
+    log("Loading model config...")
+    model_config = load_yaml(args.model_config)
 
-    try:
-        progress.set_description("Loading model config")
-        model_config = load_yaml(args.model_config)
-        progress.update(1)
+    log("Loading model...")
+    model = HFCausalModel(model_config)
 
-        progress.set_description("Loading model")
-        model = HFCausalModel(model_config)
-        progress.update(1)
+    log("Loading vector...")
+    vector = load_vector(args.vector)
 
-        progress.set_description("Loading vector")
-        vector = load_vector(args.vector)
-        progress.update(1)
+    log("Loading metadata...")
+    metadata = json.loads(Path(args.metadata).read_text(encoding="utf-8"))
+    layer_idx = int(metadata["layer"])
+    position = metadata.get("position", "unknown")
 
-        progress.set_description("Loading metadata")
-        metadata = json.loads(Path(args.metadata).read_text(encoding="utf-8"))
-        layer_idx = int(metadata["layer"])
-        position = metadata.get("position", "unknown")
-        progress.update(1)
-
-        progress.set_description("Preparing text")
-        subtitle = None
-        if args.text_file is not None:
-            text = Path(args.text_file).read_text(encoding="utf-8")
-            subtitle = f"Source: {args.text_file}"
-        else:
-            rows = read_jsonl(Path(args.dataset))
-            row = find_row(rows, args.example_id)
-            text = build_full_text_from_dataset_row(
-                model=model,
-                row=row,
-                label=args.label,
-            )
-            subtitle = (
-                f"example_id={row['example_id']} | split={row['split']} | "
-                f"ambiguity_type={row.get('ambiguity_type', '')} | label={args.label}"
-            )
-        progress.update(1)
-
-        progress.set_description("Computing token activations")
-        tokens, raw_scores = score_tokens(
+    log("Preparing text...")
+    subtitle = None
+    if args.text_file is not None:
+        text = Path(args.text_file).read_text(encoding="utf-8")
+        subtitle = f"Source: {args.text_file}"
+    else:
+        rows = read_jsonl(Path(args.dataset))
+        row = find_row(rows, args.example_id)
+        text = build_full_text_from_dataset_row(
             model=model,
-            text=text,
-            vector=vector,
-            layer_idx=layer_idx,
+            row=row,
+            label=args.label,
         )
-        progress.update(1)
-
-        progress.set_description("Rendering HTML")
-        if args.normalize == "zscore":
-            display_scores = zscore(raw_scores)
-        elif args.normalize == "minmax":
-            display_scores = minmax_scale(raw_scores)
-        else:
-            display_scores = raw_scores
-
-        title = f"Vector activations | layer {layer_idx} | {position}"
-        html_text = render_html(
-            tokens=tokens,
-            scores=display_scores,
-            title=title,
-            subtitle=subtitle,
+        subtitle = (
+            f"example_id={row['example_id']} | split={row['split']} | "
+            f"ambiguity_type={row.get('ambiguity_type', '')} | label={args.label}"
         )
 
-        out_html = Path(args.output_html)
-        out_html.parent.mkdir(parents=True, exist_ok=True)
-        out_html.write_text(html_text, encoding="utf-8")
+    log(f"Computing token activations at layer {layer_idx} ({position})...")
+    tokens, raw_scores = score_tokens(
+        model=model,
+        text=text,
+        vector=vector,
+        layer_idx=layer_idx,
+    )
 
-        out_json = out_html.with_suffix(".json")
-        save_scores_json(
-            output_json=out_json,
-            tokens=tokens,
-            raw_scores=raw_scores,
-            display_scores=display_scores,
-            metadata={
-                "layer": layer_idx,
-                "position": position,
-                "model_name": model.model_name,
-                "normalize": args.normalize,
-                "text_source": args.text_file if args.text_file else args.dataset,
-                "example_id": args.example_id,
-                "label": args.label if args.dataset else None,
-            },
-        )
-        progress.update(1)
+    log("Normalizing scores...")
+    if args.normalize == "zscore":
+        display_scores = zscore(raw_scores)
+    elif args.normalize == "minmax":
+        display_scores = minmax_scale(raw_scores)
+    else:
+        display_scores = raw_scores
 
-    finally:
-        progress.close()
+    log("Rendering HTML...")
+    title = f"Vector activations | layer {layer_idx} | {position}"
+    html_text = render_html(
+        tokens=tokens,
+        scores=display_scores,
+        title=title,
+        subtitle=subtitle,
+    )
 
-    print(f"Saved visualization to {out_html}")
-    print(f"Saved token scores to {out_json}")
-    print(f"Scored {len(tokens)} tokens.")
+    out_html = Path(args.output_html)
+    out_html.parent.mkdir(parents=True, exist_ok=True)
+    out_html.write_text(html_text, encoding="utf-8")
+
+    out_json = out_html.with_suffix(".json")
+    save_scores_json(
+        output_json=out_json,
+        tokens=tokens,
+        raw_scores=raw_scores,
+        display_scores=display_scores,
+        metadata={
+            "layer": layer_idx,
+            "position": position,
+            "model_name": model.model_name,
+            "normalize": args.normalize,
+            "text_source": args.text_file if args.text_file else args.dataset,
+            "example_id": args.example_id,
+            "label": args.label if args.dataset else None,
+        },
+    )
+
+    log(f"Saved visualization to {out_html}")
+    log(f"Saved token scores to {out_json}")
+    log(f"Scored {len(tokens)} tokens.")
+
+
+if __name__ == "__main__":
+    main()
