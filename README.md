@@ -128,11 +128,28 @@ python -u -m asv_ambiguity.runners.visualize_vector_activations \
   --drop-special-tokens \
   --output-html outputs/visualizations/seeded_00005_wrong_assistant_only.html
 
-# raw text
-# python -m asv_ambiguity.runners.visualize_vector_activations \
-#   --model-config configs/model/llama31_8b_instruct.yaml \
-#   --vector outputs/vectors/clarification_seeded_v1__last_question_token__layer16.pt \
-#   --metadata outputs/vectors/clarification_seeded_v1__last_question_token__layer16.json \
-#   --text-file my_example.txt \
-#   --output-html outputs/visualizations/my_example.html
+# many examples
+python -u -m asv_ambiguity.runners.visualize_vector_activations \
+  --model-config configs/model/llama31_8b_instruct.yaml \
+  --vector outputs/vectors/clarification_seeded_v1__last_question_token__layer16.pt \
+  --metadata outputs/vectors/clarification_seeded_v1__last_question_token__layer16.json \
+  --dataset outputs/generated/clarification_seeded_v1__unsloth_Llama-3.1-8B-Instruct__gps1__seed42.jsonl \
+  --num-examples 8 \
+  --splits val test \
+  --labels positive_response negative_wrong_question \
+  --span assistant_only \
+  --drop-special-tokens \
+  --output-html outputs/visualizations/many_positive_and_wrong.html
+
+# specific examples
+python -u -m asv_ambiguity.runners.visualize_vector_activations \
+  --model-config configs/model/llama31_8b_instruct.yaml \
+  --vector outputs/vectors/clarification_seeded_v1__last_question_token__layer16.pt \
+  --metadata outputs/vectors/clarification_seeded_v1__last_question_token__layer16.json \
+  --dataset outputs/generated/clarification_seeded_v1__unsloth_Llama-3.1-8B-Instruct__gps1__seed42.jsonl \
+  --example-ids seeded_00005 seeded_00011 seeded_00019 \
+  --labels positive_response negative_wrong_question \
+  --span assistant_only \
+  --drop-special-tokens \
+  --output-html outputs/visualizations/chosen_examples.html
 ```

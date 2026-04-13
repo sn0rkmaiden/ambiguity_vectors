@@ -4,10 +4,12 @@ import argparse
 import html
 import json
 import math
+import random
 from pathlib import Path
 from typing import Any
 
 import torch
+from tqdm.auto import tqdm
 
 from asv_ambiguity.config import load_yaml
 from asv_ambiguity.models.hf import HFCausalModel
@@ -119,13 +121,7 @@ def score_to_rgba(score: float, max_abs: float = 2.5) -> str:
     return f"rgba({r}, {g}, {b}, {alpha:.3f})"
 
 
-def render_html(
-    *,
-    tokens: list[str],
-    scores: list[float],
-    title: str,
-    subtitle: str | None = None,
-) -> str:
+def render_token_spans(tokens: list[str], scores: list[float]) -> str:
     parts = []
     for token, score in zip(tokens, scores):
         bg = score_to_rgba(score)
@@ -135,8 +131,27 @@ def render_html(
             f'style="background:{bg}; padding:2px 1px; border-radius:3px;">'
             f"{token_text}</span>"
         )
+    return "".join(parts)
 
-    subtitle_html = f"<p>{html.escape(subtitle)}</p>" if subtitle else ""
+
+def render_html(
+    *,
+    title: str,
+    subtitle: str,
+    sections: list[dict[str, Any]],
+) -> str:
+    section_html = []
+    for sec in sections:
+        section_html.append(
+            f"""
+            <div class="section">
+              <h3>{html.escape(sec["header"])}</h3>
+              <div class="meta">{html.escape(sec["meta"])}</div>
+              <div class="response"><b>Response:</b> {html.escape(sec["response_text"])}</div>
+              <div class="tokens">{render_token_spans(sec["tokens"], sec["scores"])}</div>
+            </div>
+            """
+        )
 
     return f"""<!doctype html>
 <html>
@@ -153,6 +168,7 @@ body {{
   font-family: monospace;
   white-space: pre-wrap;
   word-break: break-word;
+  margin-top: 10px;
 }}
 .legend {{
   margin-bottom: 16px;
@@ -165,19 +181,29 @@ body {{
   margin-right:6px;
   border-radius:3px;
 }}
+.section {{
+  border-top: 1px solid #ddd;
+  padding-top: 18px;
+  margin-top: 18px;
+}}
+.meta {{
+  color: #444;
+  margin-bottom: 8px;
+}}
+.response {{
+  margin-bottom: 8px;
+}}
 </style>
 </head>
 <body>
 <h2>{html.escape(title)}</h2>
-{subtitle_html}
+<p>{html.escape(subtitle)}</p>
 <div class="legend">
   <span class="box" style="background:rgba(220,60,60,0.75)"></span> positive activation
   &nbsp;&nbsp;
   <span class="box" style="background:rgba(70,110,220,0.75)"></span> negative activation
 </div>
-<div class="tokens">
-{''.join(parts)}
-</div>
+{''.join(section_html)}
 </body>
 </html>"""
 
@@ -209,29 +235,26 @@ def score_tokens(
 def save_scores_json(
     *,
     output_json: Path,
-    tokens: list[str],
-    raw_scores: list[float],
-    display_scores: list[float],
     metadata: dict[str, Any],
+    sections: list[dict[str, Any]],
 ) -> None:
     payload = {
         "metadata": metadata,
-        "tokens": tokens,
-        "raw_scores": raw_scores,
-        "display_scores": display_scores,
+        "sections": sections,
     }
     output_json.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def find_row(rows: list[dict], example_id: str) -> dict:
-    for row in rows:
-        if row["example_id"] == example_id:
-            return row
-    raise ValueError(f"Example id '{example_id}' not found.")
-
-
-def log(msg: str) -> None:
-    print(msg, flush=True)
+def find_rows_by_ids(rows: list[dict], example_ids: list[str]) -> list[dict]:
+    wanted = set(example_ids)
+    found = [row for row in rows if row["example_id"] in wanted]
+    found_ids = {row["example_id"] for row in found}
+    missing = sorted(wanted - found_ids)
+    if missing:
+        raise ValueError(f"Example ids not found: {missing}")
+    order = {eid: i for i, eid in enumerate(example_ids)}
+    found.sort(key=lambda r: order[r["example_id"]])
+    return found
 
 
 def maybe_filter_special_tokens(
@@ -260,23 +283,36 @@ def maybe_filter_special_tokens(
     return keep_tokens, keep_raw, keep_display
 
 
+def normalize_scores(raw_scores: list[float], mode: str) -> list[float]:
+    if mode == "zscore":
+        return zscore(raw_scores)
+    if mode == "minmax":
+        return minmax_scale(raw_scores)
+    return raw_scores
+
+
+def log(msg: str) -> None:
+    print(msg, flush=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-config", required=True)
     parser.add_argument("--vector", required=True)
     parser.add_argument("--metadata", required=True)
+    parser.add_argument("--dataset", required=True)
     parser.add_argument("--output-html", required=True)
 
-    parser.add_argument("--text-file", default=None)
-
-    parser.add_argument("--dataset", default=None)
-    parser.add_argument("--example-id", default=None)
+    parser.add_argument("--example-ids", nargs="*", default=None)
+    parser.add_argument("--num-examples", type=int, default=6)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--splits", nargs="+", default=["train", "val", "test"])
     parser.add_argument(
-        "--label",
-        default="positive_response",
+        "--labels",
+        nargs="+",
+        default=["positive_response", "negative_wrong_question"],
         choices=["positive_response", "negative_direct_answer", "negative_wrong_question"],
     )
-
     parser.add_argument(
         "--normalize",
         default="zscore",
@@ -287,19 +323,8 @@ def main() -> None:
         default="assistant_only",
         choices=["assistant_only", "full_sequence"],
     )
-    parser.add_argument(
-        "--drop-special-tokens",
-        action="store_true",
-    )
+    parser.add_argument("--drop-special-tokens", action="store_true")
     args = parser.parse_args()
-
-    using_text_file = args.text_file is not None
-    using_dataset = args.dataset is not None or args.example_id is not None
-
-    if using_text_file and using_dataset:
-        raise ValueError("Use either --text-file or (--dataset + --example-id), not both.")
-    if not using_text_file and not (args.dataset and args.example_id):
-        raise ValueError("Provide either --text-file OR both --dataset and --example-id.")
 
     log("Loading model config...")
     model_config = load_yaml(args.model_config)
@@ -315,63 +340,102 @@ def main() -> None:
     layer_idx = int(metadata["layer"])
     position = metadata.get("position", "unknown")
 
-    log("Preparing text...")
-    subtitle = None
-    prompt_token_count = 0
+    log("Loading dataset...")
+    rows = read_jsonl(Path(args.dataset))
 
-    if args.text_file is not None:
-        text = Path(args.text_file).read_text(encoding="utf-8")
-        subtitle = f"Source: {args.text_file} | span={args.span}"
+    allowed_splits = set(args.splits)
+    rows = [row for row in rows if row["split"] in allowed_splits]
+    if not rows:
+        raise ValueError(f"No rows left after filtering by splits {args.splits}")
+
+    if args.example_ids:
+        selected_rows = find_rows_by_ids(rows, args.example_ids)
     else:
-        rows = read_jsonl(Path(args.dataset))
-        row = find_row(rows, args.example_id)
-        text, prompt_token_count = build_full_text_from_dataset_row(
-            model=model,
-            row=row,
-            label=args.label,
-        )
-        subtitle = (
-            f"example_id={row['example_id']} | split={row['split']} | "
-            f"ambiguity_type={row.get('ambiguity_type', '')} | label={args.label} | "
-            f"span={args.span}"
-        )
+        rng = random.Random(args.seed)
+        shuffled = rows[:]
+        rng.shuffle(shuffled)
+        selected_rows = shuffled[: args.num_examples]
 
-    log(f"Computing token activations at layer {layer_idx} ({position})...")
-    tokens, raw_scores = score_tokens(
-        model=model,
-        text=text,
-        vector=vector,
-        layer_idx=layer_idx,
-    )
+    if not selected_rows:
+        raise ValueError("No examples selected.")
 
-    if args.span == "assistant_only":
-        if args.text_file is not None:
-            raise ValueError("--span assistant_only requires --dataset and --example-id.")
-        tokens = tokens[prompt_token_count:]
-        raw_scores = raw_scores[prompt_token_count:]
+    log(f"Scoring {len(selected_rows)} examples x {len(args.labels)} labels...")
+    sections = []
+    section_json = []
 
-    log("Normalizing scores...")
-    if args.normalize == "zscore":
-        display_scores = zscore(raw_scores)
-    elif args.normalize == "minmax":
-        display_scores = minmax_scale(raw_scores)
-    else:
-        display_scores = raw_scores
+    total = len(selected_rows) * len(args.labels)
+    with tqdm(total=total, desc="Visualizing", unit="sequence") as pbar:
+        for row in selected_rows:
+            for label in args.labels:
+                full_text, prompt_token_count = build_full_text_from_dataset_row(
+                    model=model,
+                    row=row,
+                    label=label,
+                )
 
-    tokens, raw_scores, display_scores = maybe_filter_special_tokens(
-        tokens=tokens,
-        raw_scores=raw_scores,
-        display_scores=display_scores,
-        drop_special_tokens=args.drop_special_tokens,
+                tokens, raw_scores = score_tokens(
+                    model=model,
+                    text=full_text,
+                    vector=vector,
+                    layer_idx=layer_idx,
+                )
+
+                if args.span == "assistant_only":
+                    tokens = tokens[prompt_token_count:]
+                    raw_scores = raw_scores[prompt_token_count:]
+
+                display_scores = normalize_scores(raw_scores, args.normalize)
+
+                tokens, raw_scores, display_scores = maybe_filter_special_tokens(
+                    tokens=tokens,
+                    raw_scores=raw_scores,
+                    display_scores=display_scores,
+                    drop_special_tokens=args.drop_special_tokens,
+                )
+
+                header = f"{row['example_id']} | {label}"
+                meta = (
+                    f"split={row['split']} | topic={row.get('topic', '')} | "
+                    f"ambiguity_type={row.get('ambiguity_type', '')}"
+                )
+
+                sections.append(
+                    {
+                        "header": header,
+                        "meta": meta,
+                        "response_text": row[label],
+                        "tokens": tokens,
+                        "scores": display_scores,
+                    }
+                )
+
+                section_json.append(
+                    {
+                        "example_id": row["example_id"],
+                        "label": label,
+                        "split": row["split"],
+                        "topic": row.get("topic", ""),
+                        "ambiguity_type": row.get("ambiguity_type", ""),
+                        "response_text": row[label],
+                        "tokens": tokens,
+                        "raw_scores": raw_scores,
+                        "display_scores": display_scores,
+                    }
+                )
+
+                pbar.update(1)
+
+    title = f"Vector activations | layer {layer_idx} | {position}"
+    subtitle = (
+        f"examples={len(selected_rows)} | labels={args.labels} | "
+        f"span={args.span} | normalize={args.normalize}"
     )
 
     log("Rendering HTML...")
-    title = f"Vector activations | layer {layer_idx} | {position}"
     html_text = render_html(
-        tokens=tokens,
-        scores=display_scores,
         title=title,
         subtitle=subtitle,
+        sections=sections,
     )
 
     out_html = Path(args.output_html)
@@ -381,9 +445,6 @@ def main() -> None:
     out_json = out_html.with_suffix(".json")
     save_scores_json(
         output_json=out_json,
-        tokens=tokens,
-        raw_scores=raw_scores,
-        display_scores=display_scores,
         metadata={
             "layer": layer_idx,
             "position": position,
@@ -391,15 +452,17 @@ def main() -> None:
             "normalize": args.normalize,
             "span": args.span,
             "drop_special_tokens": args.drop_special_tokens,
-            "text_source": args.text_file if args.text_file else args.dataset,
-            "example_id": args.example_id,
-            "label": args.label if args.dataset else None,
+            "dataset": args.dataset,
+            "splits": args.splits,
+            "labels": args.labels,
+            "selected_example_ids": [row["example_id"] for row in selected_rows],
         },
+        sections=section_json,
     )
 
     log(f"Saved visualization to {out_html}")
     log(f"Saved token scores to {out_json}")
-    log(f"Scored {len(tokens)} tokens.")
+    log(f"Rendered {len(sections)} sections.")
 
 
 if __name__ == "__main__":
