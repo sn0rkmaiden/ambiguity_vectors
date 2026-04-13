@@ -124,14 +124,18 @@ def build_negative_direct_answer(seed_row: dict) -> str:
 
 
 def build_negative_wrong_question(seed_row: dict) -> str:
+    custom = seed_row.get("negative_wrong_question")
+    if custom is not None and str(custom).strip():
+        return str(custom).strip()
+
     ambiguity_type = seed_row["ambiguity_type"]
 
     if ambiguity_type == "object_identity":
         return "Where should I put it?"
     if ambiguity_type == "preference":
-        return "Where should I serve it?"
+        return "Should I serve it now?"
     if ambiguity_type == "destination":
-        return "Which item do you mean?"
+        return "Should I put it away now?"
     return "Could you clarify?"
 
 

@@ -24,7 +24,7 @@ def build_activation_output_path(
     configured_output_path: str,
     dataset_path: str,
     model_name: str,
-    position: str,
+    positions: list[str],
 ) -> Path:
     base_output_path = Path(configured_output_path)
     if not base_output_path.is_absolute():
@@ -33,7 +33,8 @@ def build_activation_output_path(
 
     output_dir = base_output_path.parent
     dataset_stem = Path(dataset_path).stem
-    filename = f"{dataset_stem}__{slugify(model_name)}__{slugify(position)}.pt"
+    position_tag = positions[0] if len(positions) == 1 else "multi_position"
+    filename = f"{dataset_stem}__{slugify(model_name)}__{slugify(position_tag)}.pt"
     return output_dir / filename
 
 
@@ -50,13 +51,17 @@ def main() -> None:
 
     dataset_rows = read_jsonl(args.dataset)
     layers = [int(x) for x in extraction_config["extraction"]["layers"]]
-    position = str(extraction_config["extraction"]["position"])
+
+    positions = extraction_config["extraction"].get("positions")
+    if positions is None:
+        positions = [str(extraction_config["extraction"]["position"])]
+    positions = [str(x) for x in positions]
 
     bundle = collect_hidden_state_vectors(
         model=model,
         dataset_rows=dataset_rows,
         layers=layers,
-        position=position,
+        positions=positions,
     )
 
     output_path = build_activation_output_path(
@@ -64,7 +69,7 @@ def main() -> None:
         configured_output_path=extraction_config["output"]["activations_pt"],
         dataset_path=args.dataset,
         model_name=model.model_name,
-        position=position,
+        positions=positions,
     )
     ensure_parent(output_path)
     torch.save(bundle, output_path)

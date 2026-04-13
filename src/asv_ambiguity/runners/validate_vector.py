@@ -3,12 +3,12 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import re
 from pathlib import Path
 
 import torch
 from tqdm.auto import tqdm
 
+from asv_ambiguity.activations.positions import select_hidden_representation
 from asv_ambiguity.config import load_yaml
 from asv_ambiguity.models.hf import HFCausalModel
 
@@ -22,12 +22,6 @@ def read_jsonl(path: Path) -> list[dict]:
                 continue
             rows.append(json.loads(line))
     return rows
-
-
-def slugify(text: str) -> str:
-    text = text.strip().replace("/", "_")
-    text = re.sub(r"[^A-Za-z0-9._-]+", "_", text)
-    return text.strip("_")
 
 
 def build_output_paths(vector_path: str, dataset_path: str, splits: list[str]) -> tuple[Path, Path]:
@@ -79,28 +73,28 @@ Candidate values:
 {candidates_block}"""
 
 
-def render_full_text_and_first_response_index(
+def render_full_text_and_prompt_token_count(
     model: HFCausalModel,
     user_prompt: str,
     response_text: str,
 ) -> tuple[str, int]:
     prompt_text = model.render_prompt(user_prompt)
     prompt_ids = model.tokenizer(prompt_text, return_tensors="pt")["input_ids"]
-    first_response_index = int(prompt_ids.shape[1])
-
+    prompt_token_count = int(prompt_ids.shape[1])
     full_text = prompt_text + response_text
-    return full_text, first_response_index
+    return full_text, prompt_token_count
 
 
-def score_response_at_first_assistant_token(
+def score_response(
     *,
     model: HFCausalModel,
     vector: torch.Tensor,
     layer_idx: int,
+    position: str,
     user_prompt: str,
     response_text: str,
 ) -> float:
-    full_text, first_response_index = render_full_text_and_first_response_index(
+    full_text, prompt_token_count = render_full_text_and_prompt_token_count(
         model=model,
         user_prompt=user_prompt,
         response_text=response_text,
@@ -114,14 +108,16 @@ def score_response_at_first_assistant_token(
             f"Requested layer {layer_idx}, but model returned only {len(hidden_states)} hidden-state tensors."
         )
 
-    layer_h = hidden_states[layer_idx][0]  # [seq, hidden]
-    if first_response_index >= layer_h.shape[0]:
-        raise IndexError(
-            f"First response index {first_response_index} is out of bounds for sequence length {layer_h.shape[0]}."
-        )
+    hidden = hidden_states[layer_idx][0].detach().float().cpu()
+    rep = select_hidden_representation(
+        hidden=hidden,
+        input_ids=outputs["input_ids"].detach().cpu(),
+        prompt_token_count=prompt_token_count,
+        tokenizer=model.tokenizer,
+        mode=position,
+    ).detach().float().cpu()
 
-    token_vec = layer_h[first_response_index].detach().float().cpu()
-    return float(torch.dot(token_vec, vector))
+    return float(torch.dot(rep, vector))
 
 
 def summarize_results(results: list[dict], positive_label: str, negative_labels: list[str]) -> dict:
@@ -179,6 +175,7 @@ def main() -> None:
         meta = json.load(f)
 
     layer_idx = int(meta["layer"])
+    position = str(meta["position"])
     positive_label = str(meta["positive_label"])
     negative_labels = [str(x) for x in meta["negative_labels"]]
 
@@ -194,10 +191,11 @@ def main() -> None:
 
         scored = {}
         for label in labels_to_score:
-            scored[f"score_{label}"] = score_response_at_first_assistant_token(
+            scored[f"score_{label}"] = score_response(
                 model=model,
                 vector=vector,
                 layer_idx=layer_idx,
+                position=position,
                 user_prompt=user_prompt,
                 response_text=row[label],
             )
@@ -210,9 +208,6 @@ def main() -> None:
             "topic": row.get("topic", ""),
             "ambiguity_type": row.get("ambiguity_type", ""),
             "instruction": row["instruction"],
-            "positive_response": row[positive_label],
-            "negative_direct_answer": row.get("negative_direct_answer", ""),
-            "negative_wrong_question": row.get("negative_wrong_question", ""),
             "best_label": best_label,
         }
         result_row.update(scored)
@@ -228,6 +223,7 @@ def main() -> None:
     summary["dataset_path"] = str(Path(args.dataset).resolve())
     summary["model_name"] = model.model_name
     summary["layer"] = layer_idx
+    summary["position"] = position
     summary["splits"] = args.splits
 
     summary_path, rows_path = build_output_paths(

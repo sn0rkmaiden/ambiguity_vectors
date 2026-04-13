@@ -47,8 +47,6 @@ pip install -e .
 Generate synthetic examples:
 
 ```bash
-python -m asv_ambiguity.runners.generate_dataset   --model-config configs/model/llama32_1b_instruct.yaml   --data-config configs/data/referent_disambiguation.yaml
-
 python -m asv_ambiguity.runners.generate_dataset \
   --model-config configs/model/llama31_8b_instruct.yaml \
   --data-config configs/data/clarification_seeded_v1.yaml
@@ -71,12 +69,23 @@ python -m asv_ambiguity.runners.collect_activations   --model-config configs/mod
 
 # 8B model
 python -m asv_ambiguity.runners.collect_activations   --model-config configs/model/llama31_8b_instruct.yaml   --extraction-config configs/extraction/first_assistant_token.yaml   --dataset outputs/generated/clarification_seeded_v1__unsloth_Llama-3.1-8B-Instruct__gps1__seed42.jsonl
+
+# collect activations on multiple positions
+python -m asv_ambiguity.runners.collect_activations \
+  --model-config configs/model/llama31_8b_instruct.yaml \
+  --extraction-config configs/extraction/multi_positions.yaml \
+  --dataset outputs/generated/clarification_seeded_v1__unsloth_Llama-3.1-8B-Instruct__gps1__seed42.jsonl
 ```
 
 Extract the first dense vector:
 
 ```bash
 python -m asv_ambiguity.runners.extract_vector   --vector-config configs/vectors/referent_vector.yaml   --activations outputs/activations/referent_disambiguation_first_assistant_token.pt
+
+# extract vectors from multiple positions (if multi_position.yaml was used in command before)
+python -m asv_ambiguity.runners.extract_vector \
+  --vector-config configs/vectors/multi_position_vectors.yaml \
+  --activations outputs/activations/clarification_seeded_v1__unsloth_Llama-3.1-8B-Instruct__gps1__seed42__unsloth_Llama-3.1-8B-Instruct__multi_position.pt
 ```
 
 Score the vector on held-out rows, compare positive response against the two negatives, check whether the positive gets the highest score more often than chance:
@@ -87,4 +96,12 @@ python -m asv_ambiguity.runners.validate_vector \
   --vector outputs/vectors/referent_disambiguation_layer12.pt \
   --metadata outputs/vectors/referent_disambiguation_layer12.json \
   --splits val test
+
+# validate all vectors from multiple positions (provided that the necessary activations were collected beforehand)
+python -m asv_ambiguity.runners.validate_vector \
+--model-config configs/model/llama31_8b_instruct.yaml \
+--dataset outputs/generated/clarification_seeded_v1__unsloth_Llama-3.1-8B-Instruct__gps1__seed42.jsonl \
+--vector outputs/vectors/clarification_seeded_v1__mean_response__layer12.pt \
+--metadata outputs/vectors/clarification_seeded_v1__mean_response__layer12.json \
+--splits val test
 ```

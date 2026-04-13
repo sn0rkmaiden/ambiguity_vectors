@@ -2,7 +2,8 @@ concept:
   name: clarification_seeded_v1
 
 input:
-  seed_jsonl: data/seeds/clarification_seeds_realistic_v1.jsonl
+  # seed_jsonl: data/seeds/clarification_seeds_realistic_v1.jsonl
+  seed_jsonl: data/seeds/clarification_seeds_realistic_v2_with_wrong_negatives.jsonl
 
 sampling:
   generations_per_seed: 1
