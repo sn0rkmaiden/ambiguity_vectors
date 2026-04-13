@@ -66,14 +66,18 @@ def build_full_text_from_dataset_row(
     model: HFCausalModel,
     row: dict,
     label: str,
-) -> str:
+) -> tuple[str, int]:
     if label not in row:
         raise ValueError(f"Label '{label}' not found in dataset row.")
 
     user_prompt = build_scoring_user_prompt(row)
     prompt_text = model.render_prompt(user_prompt)
+    prompt_ids = model.tokenizer(prompt_text, return_tensors="pt")["input_ids"]
+    prompt_token_count = int(prompt_ids.shape[1])
+
     response_text = row[label]
-    return prompt_text + response_text
+    full_text = prompt_text + response_text
+    return full_text, prompt_token_count
 
 
 def zscore(xs: list[float]) -> list[float]:
@@ -106,10 +110,12 @@ def clip(x: float, lo: float, hi: float) -> float:
 def score_to_rgba(score: float, max_abs: float = 2.5) -> str:
     s = clip(score / max_abs, -1.0, 1.0)
     alpha = abs(s) * 0.85
+
     if s >= 0:
         r, g, b = 220, 60, 60
     else:
         r, g, b = 70, 110, 220
+
     return f"rgba({r}, {g}, {b}, {alpha:.3f})"
 
 
@@ -228,6 +234,32 @@ def log(msg: str) -> None:
     print(msg, flush=True)
 
 
+def maybe_filter_special_tokens(
+    *,
+    tokens: list[str],
+    raw_scores: list[float],
+    display_scores: list[float],
+    drop_special_tokens: bool,
+) -> tuple[list[str], list[float], list[float]]:
+    if not drop_special_tokens:
+        return tokens, raw_scores, display_scores
+
+    keep_tokens = []
+    keep_raw = []
+    keep_display = []
+
+    for tok, raw, disp in zip(tokens, raw_scores, display_scores):
+        stripped = tok.strip()
+        is_special = stripped.startswith("<|") and stripped.endswith("|>")
+        if is_special:
+            continue
+        keep_tokens.append(tok)
+        keep_raw.append(raw)
+        keep_display.append(disp)
+
+    return keep_tokens, keep_raw, keep_display
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-config", required=True)
@@ -249,6 +281,15 @@ def main() -> None:
         "--normalize",
         default="zscore",
         choices=["zscore", "minmax", "none"],
+    )
+    parser.add_argument(
+        "--span",
+        default="assistant_only",
+        choices=["assistant_only", "full_sequence"],
+    )
+    parser.add_argument(
+        "--drop-special-tokens",
+        action="store_true",
     )
     args = parser.parse_args()
 
@@ -276,20 +317,23 @@ def main() -> None:
 
     log("Preparing text...")
     subtitle = None
+    prompt_token_count = 0
+
     if args.text_file is not None:
         text = Path(args.text_file).read_text(encoding="utf-8")
-        subtitle = f"Source: {args.text_file}"
+        subtitle = f"Source: {args.text_file} | span={args.span}"
     else:
         rows = read_jsonl(Path(args.dataset))
         row = find_row(rows, args.example_id)
-        text = build_full_text_from_dataset_row(
+        text, prompt_token_count = build_full_text_from_dataset_row(
             model=model,
             row=row,
             label=args.label,
         )
         subtitle = (
             f"example_id={row['example_id']} | split={row['split']} | "
-            f"ambiguity_type={row.get('ambiguity_type', '')} | label={args.label}"
+            f"ambiguity_type={row.get('ambiguity_type', '')} | label={args.label} | "
+            f"span={args.span}"
         )
 
     log(f"Computing token activations at layer {layer_idx} ({position})...")
@@ -300,6 +344,12 @@ def main() -> None:
         layer_idx=layer_idx,
     )
 
+    if args.span == "assistant_only":
+        if args.text_file is not None:
+            raise ValueError("--span assistant_only requires --dataset and --example-id.")
+        tokens = tokens[prompt_token_count:]
+        raw_scores = raw_scores[prompt_token_count:]
+
     log("Normalizing scores...")
     if args.normalize == "zscore":
         display_scores = zscore(raw_scores)
@@ -307,6 +357,13 @@ def main() -> None:
         display_scores = minmax_scale(raw_scores)
     else:
         display_scores = raw_scores
+
+    tokens, raw_scores, display_scores = maybe_filter_special_tokens(
+        tokens=tokens,
+        raw_scores=raw_scores,
+        display_scores=display_scores,
+        drop_special_tokens=args.drop_special_tokens,
+    )
 
     log("Rendering HTML...")
     title = f"Vector activations | layer {layer_idx} | {position}"
@@ -332,6 +389,8 @@ def main() -> None:
             "position": position,
             "model_name": model.model_name,
             "normalize": args.normalize,
+            "span": args.span,
+            "drop_special_tokens": args.drop_special_tokens,
             "text_source": args.text_file if args.text_file else args.dataset,
             "example_id": args.example_id,
             "label": args.label if args.dataset else None,
