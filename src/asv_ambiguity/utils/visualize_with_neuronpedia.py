@@ -11,6 +11,7 @@ from typing import Any
 
 import requests
 import torch
+from tqdm.auto import tqdm
 
 
 API_BASE = "https://www.neuronpedia.org/api/v1"
@@ -117,15 +118,12 @@ def build_activation_request_payload(
     layer: int,
     position_hint: str | None = None,
 ) -> dict[str, Any]:
-    # The endpoint is documented; custom-vector request fields are less clearly documented
-    # publicly, so keep them isolated here for easy adjustment.
     return {
         "modelId": model_id,
         "prompt": prompt,
         "customVector": {
             "vector": vector_values,
             "layer": layer,
-            # positionHint is not guaranteed by public docs; keep it optional.
             **({"positionHint": position_hint} if position_hint else {}),
         },
     }
@@ -135,7 +133,11 @@ def call_activation_single(
     *,
     api_key: str,
     payload: dict[str, Any],
+    timeout: int,
+    progress: tqdm,
 ) -> dict[str, Any]:
+    progress.set_description("Calling Neuronpedia API")
+    progress.write("Sending request to Neuronpedia. This step can take a while...")
     resp = requests.post(
         f"{API_BASE}/activation/single",
         headers={
@@ -143,7 +145,7 @@ def call_activation_single(
             "X-SECRET-KEY": api_key,
         },
         json=payload,
-        timeout=120,
+        timeout=timeout,
     )
     if not resp.ok:
         raise RuntimeError(
@@ -153,8 +155,6 @@ def call_activation_single(
 
 
 def extract_tokens_and_scores(response_json: dict[str, Any]) -> tuple[list[str], list[float]]:
-    # Public docs show the endpoint exists, but not a stable browsable response example for
-    # custom vectors, so support a couple of likely shapes.
     if "activation" in response_json:
         activation = response_json["activation"]
         tokens = activation.get("tokens")
@@ -182,47 +182,75 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--vector", required=True, help="Path to local .pt vector file")
     parser.add_argument("--metadata", required=True, help="Path to vector metadata .json")
-    parser.add_argument("--prompt-file", required=True, help="Path to text file containing the prompt/text to visualize")
+    parser.add_argument("--prompt-file", required=True, help="Path to text file containing the text to visualize")
     parser.add_argument("--output-html", required=True)
     parser.add_argument("--model-id", default="llama3.1-8b-it", help="Neuronpedia model id")
     parser.add_argument("--api-key", default=os.environ.get("NEURONPEDIA_API_KEY"))
+    parser.add_argument("--timeout", type=int, default=180)
     args = parser.parse_args()
 
     if not args.api_key:
         raise ValueError("Pass --api-key or set NEURONPEDIA_API_KEY")
 
-    vector_values = load_vector(args.vector)
-    metadata = json.loads(Path(args.metadata).read_text(encoding="utf-8"))
-    prompt = Path(args.prompt_file).read_text(encoding="utf-8")
+    progress = tqdm(total=7, desc="Starting", unit="step")
 
-    payload = build_activation_request_payload(
-        model_id=args.model_id,
-        prompt=prompt,
-        vector_values=vector_values,
-        layer=int(metadata["layer"]),
-        position_hint=metadata.get("position"),
-    )
+    try:
+        progress.set_description("Loading vector")
+        vector_values = load_vector(args.vector)
+        progress.update(1)
 
-    response_json = call_activation_single(
-        api_key=args.api_key,
-        payload=payload,
-    )
+        progress.set_description("Loading metadata")
+        metadata = json.loads(Path(args.metadata).read_text(encoding="utf-8"))
+        progress.update(1)
 
-    tokens, raw_scores = extract_tokens_and_scores(response_json)
-    scores = zscore(raw_scores)
+        progress.set_description("Reading input text")
+        prompt = Path(args.prompt_file).read_text(encoding="utf-8")
+        progress.update(1)
 
-    title = f"Neuronpedia activation | {args.model_id} | layer {metadata['layer']} | {metadata.get('position', 'vector')}"
-    html_text = render_html(tokens, scores, title)
+        progress.set_description("Building request payload")
+        payload = build_activation_request_payload(
+            model_id=args.model_id,
+            prompt=prompt,
+            vector_values=vector_values,
+            layer=int(metadata["layer"]),
+            position_hint=metadata.get("position"),
+        )
+        progress.update(1)
 
-    out = Path(args.output_html)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(html_text, encoding="utf-8")
+        response_json = call_activation_single(
+            api_key=args.api_key,
+            payload=payload,
+            timeout=args.timeout,
+            progress=progress,
+        )
+        progress.update(1)
 
-    raw_json_out = out.with_suffix(".response.json")
-    raw_json_out.write_text(json.dumps(response_json, indent=2, ensure_ascii=False), encoding="utf-8")
+        progress.set_description("Parsing activations")
+        tokens, raw_scores = extract_tokens_and_scores(response_json)
+        scores = zscore(raw_scores)
+        progress.update(1)
+
+        progress.set_description("Writing HTML")
+        title = f"Neuronpedia activation | {args.model_id} | layer {metadata['layer']} | {metadata.get('position', 'vector')}"
+        html_text = render_html(tokens, scores, title)
+
+        out = Path(args.output_html)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(html_text, encoding="utf-8")
+
+        raw_json_out = out.with_suffix(".response.json")
+        raw_json_out.write_text(
+            json.dumps(response_json, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        progress.update(1)
+
+    finally:
+        progress.close()
 
     print(f"Saved visualization to {out}")
     print(f"Saved raw API response to {raw_json_out}")
+    print(f"Scored {len(tokens)} tokens.")
 
 
 if __name__ == "__main__":
