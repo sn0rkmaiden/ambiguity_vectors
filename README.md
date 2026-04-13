@@ -104,7 +104,12 @@ python -m asv_ambiguity.runners.validate_vector --model-config configs/model/lla
 Run visualization:
 
 ```bash
-export NEURONPEDIA_API_KEY="your_secret_key"
-
-python src/asv_ambiguity/utils/visualize_with_neuronpedia.py --vector outputs/vectors/clarification_seeded_v1__last_question_token__layer16.pt --metadata outputs/vectors/clarification_seeded_v1__last_question_token__layer16.json --prompt-file src/asv_ambiguity/data/example_prompt.txt --output-html outputs/visualizations/neuronpedia_example.html --model-id llama3.1-8b-it
+python -m asv_ambiguity.runners.visualize_vector_activations \
+  --model-config configs/model/llama31_8b_instruct.yaml \
+  --vector outputs/vectors/clarification_seeded_v1__last_question_token__layer16.pt \
+  --metadata outputs/vectors/clarification_seeded_v1__last_question_token__layer16.json \
+  --dataset outputs/generated/clarification_seeded_v1__unsloth_Llama-3.1-8B-Instruct__gps1__seed42.jsonl \
+  --example-id seeded_00005 \
+  --label positive_response \
+  --output-html outputs/visualizations/seeded_00005_positive.html
 ```
