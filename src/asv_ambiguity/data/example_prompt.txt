@@ -1,0 +1,8 @@
+Context:
+On the counter there is a red ceramic mug and a blue travel mug. Both are clean and within reach. A serving tray is next to them.
+
+Instruction:
+Put the mug on the tray.
+
+Assistant:
+Which mug do you mean, the red ceramic mug or the blue travel mug?

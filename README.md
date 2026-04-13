@@ -100,3 +100,16 @@ python -m asv_ambiguity.runners.validate_vector \
 # validate all vectors from multiple positions (provided that the necessary activations were collected beforehand)
 python -m asv_ambiguity.runners.validate_vector --model-config configs/model/llama31_8b_instruct.yaml --dataset outputs/generated/{paste_filename}.jsonl --vector outputs/vectors/{paste vector file for validation}.pt --metadata outputs/vectors/{paste vector file for validation}.json --splits val test
 ```
+
+Run visualization:
+
+```bash
+export NEURONPEDIA_API_KEY="your_secret_key"
+
+python visualize_with_neuronpedia.py \
+  --vector outputs/vectors/clarification_seeded_v1__last_question_token__layer16.pt \
+  --metadata outputs/vectors/clarification_seeded_v1__last_question_token__layer16.json \
+  --prompt-file example_prompt.txt \
+  --output-html outputs/visualizations/neuronpedia_example.html \
+  --model-id llama3.1-8b-it
+```
