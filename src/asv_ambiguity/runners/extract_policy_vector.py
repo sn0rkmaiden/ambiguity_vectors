@@ -6,8 +6,7 @@ from pathlib import Path
 
 import torch
 
-from asv_ambiguity.config import load_yaml
-from asv_ambiguity.generation.dataset_builder import resolve_project_path
+from asv_ambiguity.config import load_yaml, resolve_project_path
 from asv_ambiguity.utils.io import write_json, ensure_parent
 from asv_ambiguity.vectors.extract import extract_mean_difference_vector
 

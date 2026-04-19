@@ -1,0 +1,18 @@
+vector:
+  concept_name: policy_pairs_v1
+  positive_label: positive_response
+  negative_labels:
+    - negative_direct_answer
+  layers:
+    - 8
+    - 12
+    - 16
+  positions:
+    - first_assistant_token
+    - last_question_token
+    - mean_response
+  normalize: l2
+
+output:
+  output_dir: outputs/vectors/policy_vector_v1
+  prefix: clarify_under_ambiguity

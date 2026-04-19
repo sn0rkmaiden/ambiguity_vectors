@@ -181,7 +181,7 @@ def main() -> None:
     total_items = len(shuffled_seed_rows) * generations_per_seed
     counter = 0
 
-    progress = tqdm(total=total_items, desc="Generating dataset", unit="example")
+    progress = tqdm(total=total_items, desc="Generating policy pairs", unit="example")
 
     try:
         for seed_idx, seed_row in enumerate(shuffled_seed_rows):
