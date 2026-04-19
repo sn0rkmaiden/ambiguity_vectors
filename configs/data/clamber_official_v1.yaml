@@ -1,0 +1,6 @@
+source:
+  download_url: https://raw.githubusercontent.com/zt991211/CLAMBER/main/clamber_benchmark.jsonl
+  cache_raw_jsonl: outputs/external/raw/clamber_benchmark.jsonl
+
+output:
+  dataset_jsonl: outputs/external/clamber_official_v1.jsonl

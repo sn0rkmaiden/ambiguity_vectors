@@ -130,3 +130,26 @@ These should become standard outputs for the project:
 
 This repo is meant to stay small and experiment-friendly.
 When a path is clearly superseded, prefer deleting it rather than keeping multiple nearly-identical script families around.
+
+## New evaluation utilities
+
+### CLAMBER prompt-side probing
+These scripts support the first external evaluation step for the broad policy vector.
+
+1. Prepare the official CLAMBER dataset:
+   `python -m asv_ambiguity.runners.prepare_clamber --output-jsonl outputs/external/clamber_official_v1.jsonl`
+2. Probe a policy vector on CLAMBER prompts:
+   `python -m asv_ambiguity.runners.evaluate_policy_vector_on_clamber --model-config configs/model/llama32_1b_instruct.yaml --dataset outputs/external/clamber_official_v1.jsonl --vector <VECTOR_PT> --metadata <VECTOR_JSON> --position last_token`
+
+This gives you a prompt-only score for whether the vector activates more strongly on prompts that require clarification.
+
+### Controlled ambiguity sweeps
+These scripts generate a small deterministic prompt set where ambiguity is gradually introduced or resolved.
+
+1. Generate the sweep dataset:
+   `python -m asv_ambiguity.runners.generate_controlled_ambiguity_sweeps --output-jsonl outputs/generated/controlled_ambiguity_sweeps_v1.jsonl`
+2. Score a vector on those sweeps:
+   `python -m asv_ambiguity.runners.evaluate_vector_on_controlled_sweeps --model-config configs/model/llama32_1b_instruct.yaml --dataset outputs/generated/controlled_ambiguity_sweeps_v1.jsonl --vector <VECTOR_PT> --metadata <VECTOR_JSON> --position last_token`
+
+Use this to check whether a broad policy vector or subtype vector rises smoothly with ambiguity strength, which is your project’s closest analogue to Anthropic’s controlled prompt interventions.
+
