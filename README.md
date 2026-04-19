@@ -1,134 +1,290 @@
-# Ambiguity Vectors
+# Ambiguity Concept Vectors
 
-Scaffold for reproducing the concept-vector pipeline for ambiguity resolution:
+This repo is for concept-vector experiments on ambiguity resolution.
 
-1. generate a narrow synthetic concept dataset,
-2. replay the generated texts through the same model and collect hidden activations,
-3. extract a dense steering vector as a mean activation difference.
+The goal is to move toward a small family of concept vectors:
+- one vector per named concept
+- extracted from model-generated concept-bearing texts
+- using pooled activations over token spans
+- contrasted against the mean of other concepts
 
-The target concept is 
-> asking a useful referent-disambiguation question.
+## Current direction
 
-## Repo layout
+We want vectors for concepts such as:
+- `ask_question_vs_answer`
+- `referent_clarification`
+- `preference_clarification`
+- `destination_clarification`
 
-```text
-anthropic_style_ambiguity_vectors_starter/
-  configs/
-    data/referent_disambiguation.yaml
-    extraction/first_assistant_token.yaml
-    model/llama32_1b_instruct.yaml
-    vectors/referent_vector.yaml
-  data/
-    concepts/referent_disambiguation/topics.json
-  outputs/
-  src/asv_ambiguity/
-```
+---
 
-## Dataset schema
+## Current pipeline
 
-Each generated example contains:
-- `context`: short scene or environment
-- `instruction`: ambiguous user instruction
-- `positive_response`: a useful clarifying question
-- `negative_direct_answer`: a direct but unjustified guess
-- `negative_wrong_question`: a question that does not resolve the ambiguity
-- `missing_slot_type`: what information is missing
-- `candidate_referents`: optional list of plausible referents
-- `split`: train / val / test
+### 1. Generate a concept corpus
 
-## Install
+Script:
+- `src/asv_ambiguity/runners/generate_concept_corpus.py`
 
-```bash
-pip install -e .
-```
+Config:
+- `configs/data/concept_corpus_v1.yaml`
 
-## First run
+Input:
+- curated ambiguity seeds from  
+  `data/seeds/clarification_seeds_realistic_v2_with_wrong_negatives.jsonl`
 
-Generate synthetic examples:
+What it does:
+- starts from realistic seed scenarios
+- maps each seed to one or more named concepts
+- prompts the model to generate a **short concept-bearing text**
+- saves one row per generated text with:
+  - `record_id`
+  - `concept`
+  - `topic`
+  - `ambiguity_type`
+  - `split`
+  - `text`
+  - `metadata`
 
+Important note:
+- these texts are intended to be **longer than a one-line question**
+- the concept should be present across a span of tokens, not only at the final `?`
+
+---
+
+### 2. Collect pooled activations
+
+Script:
+- `src/asv_ambiguity/runners/collect_concept_pooled_activations.py`
+
+Config:
+- `configs/extraction/concept_pooled_v1.yaml`
+
+What it does:
+- runs each generated concept text through the model with hidden states
+- takes activations at selected layers
+- applies a **burn-in token offset** (Anthropic-style)
+- averages hidden states across token positions after that offset
+- stores one pooled representation per `(record, layer)`
+
+Current extraction settings:
+- layers: `8, 12, 16`
+- burn-in tokens: configured in YAML
+
+Important note:
+- this is concept-level pooled extraction
+- this is different from the older single-position pipeline (`first_assistant_token`, `last_question_token`, etc.)
+
+---
+
+### 3. Extract one vector per concept
+
+Script:
+- `src/asv_ambiguity/runners/extract_concept_vectors.py`
+
+Config:
+- `configs/vectors/concept_vectors_v1.yaml`
+
+What it does:
+- groups pooled activations by concept
+- for each concept and layer:
+  - computes the mean activation for that concept
+  - computes the mean activation over **all other concepts**
+  - subtracts the latter from the former
+- optionally L2-normalizes the resulting vector
+
+Formula:
+- `v_c = mean(concept c) - mean(other concepts)`
+
+This gives a family of vectors such as:
+- `ask_question_vs_answer__layer8.pt`
+- `referent_clarification__layer12.pt`
+- `preference_clarification__layer16.pt`
+- `destination_clarification__layer16.pt`
+
+---
+
+## What has already been built in the repo
+
+### A. Seeded binary clarification pipeline
+This older path is still useful for quick experiments and debugging.
+
+It includes:
+- `generate_dataset.py`
+- `collect_activations.py`
+- `extract_vector.py`
+- `validate_vector.py`
+
+This pipeline:
+- builds rows with
+  - `positive_response`
+  - `negative_direct_answer`
+  - `negative_wrong_question`
+- extracts vectors from selected positions like:
+  - `first_assistant_token`
+  - `last_question_token`
+  - `mean_response`
+
+This was useful for:
+- testing whether the repo works end-to-end
+- finding promising layers and positions
+- quickly comparing candidate extraction choices
+
+### B. Multi-position activation support
+The repo now supports collecting activations from several positions in one run:
+- `first_assistant_token`
+- `last_question_token`
+- `mean_response`
+
+This is mainly for the **older discriminative pipeline**, not the new concept-pooled pipeline.
+
+### C. Local vector visualization
+Script:
+- `src/asv_ambiguity/runners/visualize_vector_activations.py`
+
+What it does:
+- runs a model forward pass on text
+- computes token-wise scores as `h_t · v`
+- renders an HTML heatmap
+- supports:
+  - assistant-only span
+  - dropping special tokens
+  - multiple examples in one HTML
+
+This is useful for inspecting whether a vector activates on:
+- generic question structure
+- punctuation like `?`
+- or more meaningful content words
+
+---
+
+## Current findings from earlier experiments
+
+Using the older discriminative pipeline, the best-performing settings so far were:
+- `last_question_token`, layer 16
+- `last_question_token`, layer 12
+- `mean_response`, layer 16
+
+The main pattern was:
+- `first_assistant_token` was weaker
+- later / pooled positions were much better at distinguishing
+  - good clarifying questions
+  - from wrong questions and direct answers
+
+This motivated the shift toward a more Anthropic-like pooled-concept setup.
+
+---
+
+## Recommended workflow now
+
+### Main path
+1. generate a multi-concept corpus
+2. collect pooled activations
+3. extract one vector per concept and layer
+4. run controlled sensitivity tests
+5. only then consider steering
+
+### Why
+This is closer to Anthropic's sequence:
+- concept texts
+- pooled activations
+- concept vectors
+- validation / sensitivity checks
+- intervention later
+
+---
+
+## Files and configs introduced for the new concept-vector path
+
+### Data config
+- `configs/data/concept_corpus_v1.yaml`
+
+### Extraction config
+- `configs/extraction/concept_pooled_v1.yaml`
+
+### Vector config
+- `configs/vectors/concept_vectors_v1.yaml`
+
+### New runners
+- `generate_concept_corpus.py`
+- `collect_concept_pooled_activations.py`
+- `extract_concept_vectors.py`
+
+---
+
+## Outputs
+
+### Generated concept corpus
+Saved under:
+- `outputs/generated/`
+
+Example name pattern:
+- `concept_corpus_v1__<model>__c<num_concepts>__g<num_generations>__seed<seed>.jsonl`
+
+### Pooled activations
+Saved under:
+- `outputs/activations/`
+
+### Concept vectors
+Saved under:
+- `outputs/vectors/concept_vectors_v1/`
+
+---
+
+## Next steps
+
+The next step should be:
+- **controlled sensitivity tests**, not steering
+
+Examples:
+- compare texts that differ only in ambiguity type
+- compare correct vs generic vs wrong clarification within the same scenario
+- check whether each concept vector activates most for its own concept
+
+After that:
+- compare concept vectors by layer
+- inspect token activations on held-out texts
+- only then move to causal intervention / steering
+
+---
+
+## Brief record of previous commands used
+
+These are older commands that were used during the earlier binary clarification pipeline and are kept here only as a brief reference.
+
+### Generate seeded dataset
 ```bash
 python -m asv_ambiguity.runners.generate_dataset \
   --model-config configs/model/llama31_8b_instruct.yaml \
   --data-config configs/data/clarification_seeded_v1.yaml
 ```
 
-Inspect generated dataset:
-
+### Collect multi-position activations
 ```bash
-python -m asv_ambiguity.runners.inspect_dataset \
-  --dataset outputs/generated/{paste_filename}.jsonl \
-  --num-examples 12 \
-  --show-raw
-```
-
-Collect activations:
-
-```bash
-# 1B model
-python -m asv_ambiguity.runners.collect_activations   --model-config configs/model/llama32_1b_instruct.yaml   --extraction-config configs/extraction/first_assistant_token.yaml   --dataset outputs/generated/{paste_filename}.jsonl
-
-# 8B model
-python -m asv_ambiguity.runners.collect_activations   --model-config configs/model/llama31_8b_instruct.yaml   --extraction-config configs/extraction/first_assistant_token.yaml   --dataset outputs/generated/{paste_filename}.jsonl
-
-# collect activations on multiple positions
 python -m asv_ambiguity.runners.collect_activations \
   --model-config configs/model/llama31_8b_instruct.yaml \
   --extraction-config configs/extraction/multi_positions.yaml \
-  --dataset outputs/generated/{paste_filename}.jsonl
+  --dataset outputs/generated/clarification_seeded_v1__unsloth_Llama-3.1-8B-Instruct__gps1__seed42.jsonl
 ```
 
-Extract the first dense vector:
-
+### Extract multi-position vectors
 ```bash
-python -m asv_ambiguity.runners.extract_vector   --vector-config configs/vectors/referent_vector.yaml   --activations outputs/activations/referent_disambiguation_first_assistant_token.pt
-
-# extract vectors from multiple positions (if multi_position.yaml was used in command before)
 python -m asv_ambiguity.runners.extract_vector \
   --vector-config configs/vectors/multi_position_vectors.yaml \
-  --activations outputs/activations/{paste_activations_filename}.pt
+  --activations outputs/activations/clarification_seeded_v1__unsloth_Llama-3.1-8B-Instruct__gps1__seed42__unsloth_Llama-3.1-8B-Instruct__multi_position.pt
 ```
 
-Score the vector on held-out rows, compare positive response against the two negatives, check whether the positive gets the highest score more often than chance:
+### Validate a vector
 ```bash
 python -m asv_ambiguity.runners.validate_vector \
   --model-config configs/model/llama31_8b_instruct.yaml \
-  --dataset outputs/generated/{paste_filename}.jsonl \
-  --vector outputs/vectors/referent_disambiguation_layer12.pt \
-  --metadata outputs/vectors/referent_disambiguation_layer12.json \
+  --dataset outputs/generated/clarification_seeded_v1__unsloth_Llama-3.1-8B-Instruct__gps1__seed42.jsonl \
+  --vector outputs/vectors/clarification_seeded_v1__last_question_token__layer16.pt \
+  --metadata outputs/vectors/clarification_seeded_v1__last_question_token__layer16.json \
   --splits val test
-
-# validate all vectors from multiple positions (provided that the necessary activations were collected beforehand)
-python -m asv_ambiguity.runners.validate_vector --model-config configs/model/llama31_8b_instruct.yaml --dataset outputs/generated/{paste_filename}.jsonl --vector outputs/vectors/{paste vector file for validation}.pt --metadata outputs/vectors/{paste vector file for validation}.json --splits val test
 ```
 
-Run visualization:
-
+### Visualize token activations
 ```bash
-# good question
-python -u -m asv_ambiguity.runners.visualize_vector_activations \
-  --model-config configs/model/llama31_8b_instruct.yaml \
-  --vector outputs/vectors/clarification_seeded_v1__last_question_token__layer16.pt \
-  --metadata outputs/vectors/clarification_seeded_v1__last_question_token__layer16.json \
-  --dataset outputs/generated/clarification_seeded_v1__unsloth_Llama-3.1-8B-Instruct__gps1__seed42.jsonl \
-  --example-id seeded_00005 \
-  --label positive_response \
-  --span assistant_only \
-  --drop-special-tokens \
-  --output-html outputs/visualizations/seeded_00005_positive_assistant_only.html
-
-# wrong question
-python -u -m asv_ambiguity.runners.visualize_vector_activations \
-  --model-config configs/model/llama31_8b_instruct.yaml \
-  --vector outputs/vectors/clarification_seeded_v1__last_question_token__layer16.pt \
-  --metadata outputs/vectors/clarification_seeded_v1__last_question_token__layer16.json \
-  --dataset outputs/generated/clarification_seeded_v1__unsloth_Llama-3.1-8B-Instruct__gps1__seed42.jsonl \
-  --example-id seeded_00005 \
-  --label negative_wrong_question \
-  --span assistant_only \
-  --drop-special-tokens \
-  --output-html outputs/visualizations/seeded_00005_wrong_assistant_only.html
-
-# many examples
 python -u -m asv_ambiguity.runners.visualize_vector_activations \
   --model-config configs/model/llama31_8b_instruct.yaml \
   --vector outputs/vectors/clarification_seeded_v1__last_question_token__layer16.pt \
@@ -140,16 +296,24 @@ python -u -m asv_ambiguity.runners.visualize_vector_activations \
   --span assistant_only \
   --drop-special-tokens \
   --output-html outputs/visualizations/many_positive_and_wrong.html
+```
 
-# specific examples
-python -u -m asv_ambiguity.runners.visualize_vector_activations \
+### New Anthropic-style concept workflow
+```bash
+python -m asv_ambiguity.runners.generate_concept_corpus \
   --model-config configs/model/llama31_8b_instruct.yaml \
-  --vector outputs/vectors/clarification_seeded_v1__last_question_token__layer16.pt \
-  --metadata outputs/vectors/clarification_seeded_v1__last_question_token__layer16.json \
-  --dataset outputs/generated/clarification_seeded_v1__unsloth_Llama-3.1-8B-Instruct__gps1__seed42.jsonl \
-  --example-ids seeded_00005 seeded_00011 seeded_00019 \
-  --labels positive_response negative_wrong_question \
-  --span assistant_only \
-  --drop-special-tokens \
-  --output-html outputs/visualizations/chosen_examples.html
+  --data-config configs/data/concept_corpus_v1.yaml
+```
+
+```bash
+python -m asv_ambiguity.runners.collect_concept_pooled_activations \
+  --model-config configs/model/llama31_8b_instruct.yaml \
+  --extraction-config configs/extraction/concept_pooled_v1.yaml \
+  --dataset outputs/generated/concept_corpus_v1__unsloth_Llama-3.1-8B-Instruct__c4__g1__seed42.jsonl
+```
+
+```bash
+python -m asv_ambiguity.runners.extract_concept_vectors \
+  --vector-config configs/vectors/concept_vectors_v1.yaml \
+  --activations outputs/activations/concept_corpus_v1__unsloth_Llama-3.1-8B-Instruct__c4__g1__seed42__unsloth_Llama-3.1-8B-Instruct__concept_pooled.pt
 ```

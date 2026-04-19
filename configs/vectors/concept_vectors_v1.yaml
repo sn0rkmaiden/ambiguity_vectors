@@ -1,0 +1,15 @@
+vector:
+  concepts:
+    - ask_question_vs_answer
+    - referent_clarification
+    - preference_clarification
+    - destination_clarification
+  layers:
+    - 8
+    - 12
+    - 16
+  split: train
+  normalize: l2
+
+output:
+  output_dir: outputs/vectors/concept_vectors_v1
