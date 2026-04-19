@@ -8,13 +8,15 @@ input:
   seed_jsonl: data/seeds/clarification_seeds_realistic_v2_with_wrong_negatives.jsonl
 
 generation:
-  min_words: 90
-  max_words: 140
+  min_words: 60
+  max_words: 110
+  relaxed_min_words: 45
 
 sampling:
   generations_per_seed_per_concept: 1
   random_seed: 42
   max_attempts_per_example: 5
+  skip_failed_examples: true
 
 splits:
   train_ratio: 0.7

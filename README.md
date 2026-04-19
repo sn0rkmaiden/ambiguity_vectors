@@ -247,6 +247,25 @@ After that:
 
 ---
 
+### New concept workflow
+```bash
+python -m asv_ambiguity.runners.generate_concept_corpus \
+  --model-config configs/model/llama31_8b_instruct.yaml \
+  --data-config configs/data/concept_corpus_v1.yaml
+```
+
+```bash
+python -m asv_ambiguity.runners.collect_concept_pooled_activations \
+  --model-config configs/model/llama31_8b_instruct.yaml \
+  --extraction-config configs/extraction/concept_pooled_v1.yaml \
+  --dataset outputs/generated/concept_corpus_v1__unsloth_Llama-3.1-8B-Instruct__c4__g1__seed42.jsonl
+```
+
+```bash
+python -m asv_ambiguity.runners.extract_concept_vectors \
+  --vector-config configs/vectors/concept_vectors_v1.yaml \
+  --activations outputs/activations/concept_corpus_v1__unsloth_Llama-3.1-8B-Instruct__c4__g1__seed42__unsloth_Llama-3.1-8B-Instruct__concept_pooled.pt
+```
 ## Brief record of previous commands used
 
 These are older commands that were used during the earlier binary clarification pipeline and are kept here only as a brief reference.
@@ -296,24 +315,4 @@ python -u -m asv_ambiguity.runners.visualize_vector_activations \
   --span assistant_only \
   --drop-special-tokens \
   --output-html outputs/visualizations/many_positive_and_wrong.html
-```
-
-### New Anthropic-style concept workflow
-```bash
-python -m asv_ambiguity.runners.generate_concept_corpus \
-  --model-config configs/model/llama31_8b_instruct.yaml \
-  --data-config configs/data/concept_corpus_v1.yaml
-```
-
-```bash
-python -m asv_ambiguity.runners.collect_concept_pooled_activations \
-  --model-config configs/model/llama31_8b_instruct.yaml \
-  --extraction-config configs/extraction/concept_pooled_v1.yaml \
-  --dataset outputs/generated/concept_corpus_v1__unsloth_Llama-3.1-8B-Instruct__c4__g1__seed42.jsonl
-```
-
-```bash
-python -m asv_ambiguity.runners.extract_concept_vectors \
-  --vector-config configs/vectors/concept_vectors_v1.yaml \
-  --activations outputs/activations/concept_corpus_v1__unsloth_Llama-3.1-8B-Instruct__c4__g1__seed42__unsloth_Llama-3.1-8B-Instruct__concept_pooled.pt
 ```

@@ -107,12 +107,21 @@ def build_concept_prompt(
     seed_row: dict,
     min_words: int,
     max_words: int,
+    attempt: int,
 ) -> str:
     candidate_values = seed_row.get("candidate_values", [])
     candidates_block = "\n".join(f"- {x}" for x in candidate_values)
 
+    retry_note = ""
+    if attempt >= 1:
+        retry_note = (
+            f"\nImportant: the previous attempt was too short. "
+            f"This time, write at least {min_words} words."
+        )
+
     base = f"""Write a short natural text of about {min_words}-{max_words} words.
 It should be plain text only, no bullet points, no JSON, no headings.
+Do not summarize. Write a continuous paragraph.{retry_note}
 
 Use this scenario:
 
@@ -127,8 +136,8 @@ Candidate values:
     if concept == "ask_question_vs_answer":
         return base + """
 The text should make it clear that the assistant chooses to ask a clarifying question instead of taking action immediately.
-Make the question natural and useful.
-The concept should be apparent throughout the text, not only at the end.
+Make the clarifying question natural and useful.
+Make the concept visible throughout the paragraph, not only in the final sentence.
 Output only the text.
 """.strip()
 
@@ -136,7 +145,7 @@ Output only the text.
         return base + """
 The text should make it clear that the missing information is which object or referent is intended.
 The assistant should ask a specific clarifying question that resolves that referent ambiguity.
-The concept should be apparent throughout the text, not only at the end.
+Make the concept visible throughout the paragraph, not only in the final sentence.
 Output only the text.
 """.strip()
 
@@ -144,7 +153,7 @@ Output only the text.
         return base + """
 The text should make it clear that the missing information is the user's preference or option choice.
 The assistant should ask a specific clarifying question that resolves that preference ambiguity.
-The concept should be apparent throughout the text, not only at the end.
+Make the concept visible throughout the paragraph, not only in the final sentence.
 Output only the text.
 """.strip()
 
@@ -152,7 +161,7 @@ Output only the text.
         return base + """
 The text should make it clear that the missing information is the intended destination or placement.
 The assistant should ask a specific clarifying question that resolves that destination ambiguity.
-The concept should be apparent throughout the text, not only at the end.
+Make the concept visible throughout the paragraph, not only in the final sentence.
 Output only the text.
 """.strip()
 
@@ -180,8 +189,10 @@ def main() -> None:
     concepts = [str(x) for x in data_config["concepts"]]
     min_words = int(data_config["generation"]["min_words"])
     max_words = int(data_config["generation"]["max_words"])
+    relaxed_min_words = int(data_config["generation"].get("relaxed_min_words", min_words))
     generations_per_seed_per_concept = int(data_config["sampling"]["generations_per_seed_per_concept"])
     max_attempts = int(data_config["sampling"].get("max_attempts_per_example", 5))
+    skip_failed_examples = bool(data_config["sampling"].get("skip_failed_examples", True))
 
     rng = random.Random(seed)
     shuffled_seed_rows = seed_rows[:]
@@ -193,6 +204,7 @@ def main() -> None:
     )
 
     rows = []
+    skipped = []
     total_seed_items = len(shuffled_seed_rows)
     record_counter = 0
 
@@ -209,20 +221,29 @@ def main() -> None:
 
             for concept in concepts_for_seed:
                 for gen_idx in range(generations_per_seed_per_concept):
-                    prompt = build_concept_prompt(
-                        concept=concept,
-                        seed_row=seed_row,
-                        min_words=min_words,
-                        max_words=max_words,
-                    )
-
                     last_error = None
+                    best_text = None
+                    best_wc = -1
+                    best_raw = None
+
                     for attempt in range(max_attempts):
                         try:
+                            prompt = build_concept_prompt(
+                                concept=concept,
+                                seed_row=seed_row,
+                                min_words=min_words,
+                                max_words=max_words,
+                                attempt=attempt,
+                            )
                             raw = model.generate_text(prompt)
                             text = clean_generated_text(raw)
-
                             wc = word_count(text)
+
+                            if wc > best_wc:
+                                best_text = text
+                                best_wc = wc
+                                best_raw = raw
+
                             if wc < min_words:
                                 raise ValueError(f"Generated text too short: {wc} words")
 
@@ -243,6 +264,7 @@ def main() -> None:
                                     "instruction": seed_row["instruction"],
                                     "context": seed_row["context"],
                                     "raw_model_output": raw,
+                                    "length_mode": "strict",
                                 },
                             }
                             rows.append(row)
@@ -257,10 +279,53 @@ def main() -> None:
                                 f"attempt={attempt + 1}/{max_attempts} failed: {exc}"
                             )
                     else:
-                        raise RuntimeError(
-                            f"Failed to generate concept text for seed={seed_idx}, concept={concept}. "
-                            f"Last error: {last_error}"
-                        )
+                        if best_text is not None and best_wc >= relaxed_min_words:
+                            progress.write(
+                                f"[info] accepting relaxed-length example for seed={seed_idx:04d}, "
+                                f"concept={concept}: {best_wc} words"
+                            )
+                            row = {
+                                "record_id": f"concept_{record_counter:05d}",
+                                "seed_row_index": seed_idx,
+                                "concept": concept,
+                                "topic": seed_row["topic"],
+                                "ambiguity_type": seed_row["ambiguity_type"],
+                                "gold_missing_slot": seed_row["gold_missing_slot"],
+                                "split": split,
+                                "text": best_text,
+                                "metadata": {
+                                    "model_name": model_name,
+                                    "generation_index": gen_idx,
+                                    "word_count": best_wc,
+                                    "candidate_values": seed_row.get("candidate_values", []),
+                                    "instruction": seed_row["instruction"],
+                                    "context": seed_row["context"],
+                                    "raw_model_output": best_raw,
+                                    "length_mode": "relaxed",
+                                },
+                            }
+                            rows.append(row)
+                            record_counter += 1
+                            progress.update(1)
+                            progress.set_postfix_str(f"concept={concept}")
+                        else:
+                            msg = (
+                                f"Failed to generate concept text for seed={seed_idx}, concept={concept}. "
+                                f"Last error: {last_error}"
+                            )
+                            if skip_failed_examples:
+                                progress.write(f"[skip] {msg}")
+                                skipped.append(
+                                    {
+                                        "seed_row_index": seed_idx,
+                                        "concept": concept,
+                                        "error": str(last_error),
+                                        "best_word_count": best_wc,
+                                    }
+                                )
+                                progress.update(1)
+                            else:
+                                raise RuntimeError(msg)
     finally:
         progress.close()
 
@@ -276,6 +341,11 @@ def main() -> None:
 
     write_jsonl(output_path, rows)
     print(f"Wrote {len(rows)} concept-text records to {output_path}")
+
+    if skipped:
+        skipped_path = output_path.with_name(output_path.stem + "__skipped.json")
+        skipped_path.write_text(json.dumps(skipped, indent=2, ensure_ascii=False), encoding="utf-8")
+        print(f"Wrote skipped-record report to {skipped_path}")
 
 
 if __name__ == "__main__":
