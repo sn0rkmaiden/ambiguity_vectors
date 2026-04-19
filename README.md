@@ -266,6 +266,33 @@ python -m asv_ambiguity.runners.extract_concept_vectors \
   --vector-config configs/vectors/concept_vectors_v1.yaml \
   --activations outputs/activations/concept_corpus_v1__unsloth_Llama-3.1-8B-Instruct__c4__g1__seed42__unsloth_Llama-3.1-8B-Instruct__concept_pooled.pt
 ```
+
+In-domain evaluation:
+```bash
+python -m asv_ambiguity.runners.validate_concept_vectors \
+  --activations outputs/activations/concept_corpus_v1__unsloth_Llama-3.1-8B-Instruct__c4__g1__seed42__unsloth_Llama-3.1-8B-Instruct__concept_pooled.pt \
+  --vector-dir outputs/vectors/concept_vectors_v1 \
+  --layer 12 \
+  --split val test \
+  --output-dir outputs/concept_eval \
+  --top-k 8
+```
+
+External corpus sweep:
+```bash
+python -m asv_ambiguity.runners.sweep_concept_vectors_on_corpus \
+  --model-config configs/model/llama31_8b_instruct.yaml \
+  --vector-dir outputs/vectors/concept_vectors_v1 \
+  --layer 12 \
+  --external-jsonl path/to/external_dataset.jsonl \
+  --external-text-key text \
+  --burn-in-tokens 30 \
+  --max-rows 500 \
+  --top-k 25 \
+  --output-dir outputs/concept_eval_external
+```
+
+
 ## Brief record of previous commands used
 
 These are older commands that were used during the earlier binary clarification pipeline and are kept here only as a brief reference.
