@@ -323,6 +323,47 @@ def deterministic_question_checks(text: str, *, allow_generic: bool) -> list[str
     return errors
 
 
+def clean_generated_text(text: str) -> str:
+    cleaned = text.strip()
+    cleaned = re.sub(r"^assistant\s*[:\-]\s*", "", cleaned, flags=re.IGNORECASE).strip()
+    cleaned = cleaned.strip("\"'`")
+    return cleaned
+
+
+def extract_or_coerce_question(text: str) -> str:
+    cleaned = clean_generated_text(text)
+
+    try:
+        return HFCausalModel.extract_first_question(cleaned)
+    except Exception:
+        pass
+
+    lines = [line.strip().strip("\"'`") for line in cleaned.splitlines() if line.strip()]
+    joined = normalize_space(lines[0] if lines else cleaned)
+
+    clause_match = re.search(
+        r"\b(which|what|where|who|when|why|how|whether|do|does|did|is|are|was|were|can|could|would|should|will)\b[^.?!\n]*",
+        joined,
+        flags=re.IGNORECASE,
+    )
+    if clause_match:
+        candidate = clause_match.group(0).strip(" .,;:\"'`") + "?"
+        return normalize_space(candidate)
+
+    polite_match = re.search(
+        r"please\s+(tell|say|clarify|specify|confirm)\s+[^.?!\n]*",
+        joined,
+        flags=re.IGNORECASE,
+    )
+    if polite_match:
+        candidate = polite_match.group(0).strip(" .,;:\"'`")
+        if not candidate.endswith("?"):
+            candidate += "?"
+        return normalize_space(candidate)
+
+    raise ValueError(f"Could not extract a question from model output: {text!r}")
+
+
 def extract_first_json_object(text: str) -> dict[str, Any]:
     start = text.find("{")
     if start == -1:
@@ -344,6 +385,28 @@ def extract_first_json_object(text: str) -> dict[str, Any]:
         raise ValueError(f"Could not find complete JSON object in validator output: {text!r}")
 
     return json.loads(text[start:end])
+
+
+def parse_validator_output(raw: str, expected_keys: list[str]) -> dict[str, Any]:
+    try:
+        result = extract_first_json_object(raw)
+    except Exception as exc:
+        return {
+            "_parse_failed": True,
+            "reason": f"validator_parse_failure: {exc}",
+            "raw_validator_output": raw,
+        }
+
+    missing = [k for k in expected_keys if k not in result]
+    if missing:
+        result["_parse_failed"] = True
+        result["reason"] = f"validator_missing_keys: {', '.join(missing)}"
+        result["raw_validator_output"] = raw
+        return result
+
+    result["_parse_failed"] = False
+    result["raw_validator_output"] = raw
+    return result
 
 
 def validate_positive_question(model: HFCausalModel, seed_row: dict, question: str) -> dict[str, Any]:
@@ -461,7 +524,7 @@ def generate_validated_question(
     for attempt_idx in range(max_attempts):
         try:
             raw = model.generate_text(initial_prompt)
-            candidate = model.extract_first_question(raw)
+            candidate = extract_or_coerce_question(raw)
             validation = validate_fn(model, seed_row, candidate)
             repairs: list[dict[str, Any]] = []
 
@@ -489,7 +552,7 @@ def generate_validated_question(
                     feedback=str(repaired_validation.get("reason", "failed validation")),
                 )
                 repair_raw = model.generate_text(repair_prompt)
-                repaired_candidate = model.extract_first_question(repair_raw)
+                repaired_candidate = extract_or_coerce_question(repair_raw)
                 repaired_validation = validate_fn(model, seed_row, repaired_candidate)
                 repairs.append(
                     {
@@ -561,6 +624,7 @@ def main() -> None:
 
     generations_per_seed = int(sampling_cfg.get("generations_per_seed", 1))
     max_attempts = int(sampling_cfg.get("max_attempts_per_example", 5))
+    skip_failed_examples = bool(sampling_cfg.get("skip_failed_examples", True))
     preserve_input_split = bool(data_config["splits"].get("preserve_input_split", False))
     max_repairs_per_attempt = int(validation_cfg.get("max_repairs_per_attempt", 1))
     use_model_generated_wrong_questions = bool(
@@ -582,6 +646,7 @@ def main() -> None:
     rows = []
     total_items = len(shuffled_seed_rows) * generations_per_seed
     counter = 0
+    skipped_examples = 0
 
     progress = tqdm(total=total_items, desc="Generating policy pairs", unit="example")
 
@@ -681,6 +746,11 @@ def main() -> None:
                     progress.write(
                         f"[warn] topic={seed_row['topic']!r} example={counter:05d} failed: {exc}"
                     )
+                    if skip_failed_examples:
+                        skipped_examples += 1
+                        progress.update(1)
+                        counter += 1
+                        continue
                     raise RuntimeError(
                         f"Failed to build example for topic={seed_row['topic']!r}, "
                         f"example={counter:05d}. Last error: {exc}"
@@ -700,6 +770,8 @@ def main() -> None:
 
     write_jsonl(output_path, rows)
     print(f"Wrote {len(rows)} examples to {output_path}")
+    if skipped_examples:
+        print(f"Skipped {skipped_examples} failed examples during generation")
 
 
 if __name__ == "__main__":
