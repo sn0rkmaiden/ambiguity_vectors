@@ -16,3 +16,8 @@ splits:
 
 output:
   dataset_jsonl: outputs/generated/policy_pairs.jsonl
+
+validation:
+  max_repairs_per_attempt: 1
+  use_model_generated_wrong_questions: true
+  fallback_to_seed_wrong_question: true
